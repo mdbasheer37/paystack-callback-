@@ -1,6 +1,5 @@
-
 import os
-from flask import Flask, request, jsonify, redirect
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 import hashlib
 import hmac
@@ -27,59 +26,24 @@ PAYSTACK_BASE_URL = "https://api.paystack.co"
 FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL")
 
 # Initialize Firebase
+firebase_initialized = False
 try:
-    # Better approach for Firebase credentials
-    firebase_cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH")
-    if firebase_cred_path and os.path.exists(firebase_cred_path):
-        cred = credentials.Certificate(firebase_cred_path)
+    if os.getenv("FIREBASE_CREDENTIALS_JSON"):
+        cred_dict = json.loads(os.getenv("FIREBASE_CREDENTIALS_JSON"))
+        cred = credentials.Certificate(cred_dict)
+        firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_DB_URL})
+        firebase_initialized = True
+        print("Firebase initialized successfully")
     else:
-        # Fallback to environment variable
-        firebase_creds_json = os.getenv("FIREBASE_CREDENTIALS_JSON")
-        if firebase_creds_json:
-            cred_dict = json.loads(firebase_creds_json)
-            cred = credentials.Certificate(cred_dict)
-        else:
-            # Use default application credentials (for Google Cloud)
-            cred = credentials.ApplicationDefault()
-    
-    firebase_admin.initialize_app(cred, {
-        'databaseURL': FIREBASE_DB_URL
-    })
-    print("Firebase initialized successfully")
+        print("Firebase credentials not found")
 except Exception as e:
     print(f"Firebase initialization failed: {str(e)}")
-    # Continue without Firebase for testing
-    firebase_initialized = False
-else:
-    firebase_initialized = True
 
 # Payment methods
 PAYMENT_METHODS = {
-    "card": {
-        "name": "Card",
-        "icon": "credit-card",
-        "color": "#3498db"
-    },
-    "bank_transfer": {
-        "name": "Bank Transfer",
-        "icon": "bank",
-        "color": "#2ecc71"
-    },
-    "ussd": {
-        "name": "USSD",
-        "icon": "phone",
-        "color": "#e74c3c"
-    },
-    "mobile_money": {
-        "name": "Mobile Money",
-        "icon": "mobile",
-        "color": "#9b59b6"
-    },
-    "qr": {
-        "name": "QR Code",
-        "icon": "qrcode",
-        "color": "#f39c12"
-    }
+    "card": {"name": "Card", "icon": "credit-card", "color": "#3498db"},
+    "bank_transfer": {"name": "Bank Transfer", "icon": "bank", "color": "#2ecc71"},
+    "ussd": {"name": "USSD", "icon": "phone", "color": "#e74c3c"}
 }
 
 # ======= DECORATORS =======
@@ -96,10 +60,9 @@ def verify_paystack_signature(signature, body):
     """Verify Paystack webhook signature"""
     if not PAYSTACK_SECRET_KEY:
         return False
-        
     computed_signature = hmac.new(
-        PAYSTACK_SECRET_KEY.encode("utf-8"),
-        body,
+        PAYSTACK_SECRET_KEY.encode("utf-8"), 
+        body, 
         hashlib.sha512
     ).hexdigest()
     return hmac.compare_digest(signature, computed_signature)
@@ -136,11 +99,11 @@ def update_user_wallet(user_email, amount):
         print(f"Error updating user wallet: {str(e)}")
         return False
 
-def initialize_paystack_transaction(email, amount, metadata=None, channel=None, callback_url=None):
+def initialize_paystack_transaction(email, amount, metadata=None, channel=None):
     """Initialize a transaction with Paystack"""
     if not PAYSTACK_SECRET_KEY:
         return {"error": "Paystack not configured"}
-    
+
     headers = {
         "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
         "Content-Type": "application/json"
@@ -150,12 +113,12 @@ def initialize_paystack_transaction(email, amount, metadata=None, channel=None, 
         "email": email,
         "amount": int(amount * 100),  # Paystack uses kobo (for NGN)
         "metadata": metadata or {},
-        "callback_url": callback_url or url_for('payment_redirect', _external=True)
+        "callback_url": f"{os.getenv('BACKEND_URL')}/payment/redirect"
     }
     
     if channel:
         payload["channels"] = [channel]
-    
+        
     try:
         response = requests.post(
             f"{PAYSTACK_BASE_URL}/transaction/initialize",
@@ -173,7 +136,7 @@ def verify_paystack_transaction(reference):
     """Verify a Paystack transaction"""
     if not PAYSTACK_SECRET_KEY:
         return {"error": "Paystack not configured"}
-    
+
     headers = {
         "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
         "Content-Type": "application/json"
@@ -220,21 +183,20 @@ def api_initialize_payment():
         data = request.get_json()
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
-        
+
         email = data.get("email")
         amount = data.get("amount")
         channel = data.get("channel", "card")
         service_type = data.get("service_type", "wallet_funding")
-        callback_url = data.get("callback_url")
         
         if not email or not amount:
             return jsonify({"error": "Email and amount are required"}), 400
-        
+            
         try:
             amount = float(amount)
         except ValueError:
             return jsonify({"error": "Amount must be a number"}), 400
-        
+
         # Initialize payment with Paystack
         metadata = {
             "service_type": service_type,
@@ -247,16 +209,15 @@ def api_initialize_payment():
             email=email,
             amount=amount,
             metadata=metadata,
-            channel=channel,
-            callback_url=callback_url
+            channel=channel
         )
         
         if "error" in response:
             return jsonify({"error": response["error"]}), 500
-        
+            
         if not response or not response.get("status"):
             return jsonify({"error": "Payment initialization failed"}), 400
-        
+
         # Log transaction to Firebase
         transaction_data = {
             "email": email,
@@ -281,7 +242,7 @@ def api_initialize_payment():
                 "transaction_id": transaction_id
             }
         })
-    
+        
     except Exception as e:
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
@@ -290,19 +251,20 @@ def api_verify_payment(reference):
     """API endpoint to verify a payment"""
     if not reference:
         return jsonify({"error": "Reference is required"}), 400
-    
+
     # Verify the transaction
     verification = verify_paystack_transaction(reference)
+    
     if "error" in verification:
         return jsonify({"error": verification["error"]}), 500
-    
+        
     if not verification or not verification.get("status"):
         return jsonify({
             "status": "error",
             "message": "Payment verification failed",
             "reference": reference
         }), 400
-    
+
     # Update Firebase with payment status
     transaction_updated = False
     wallet_updated = False
@@ -326,10 +288,10 @@ def api_verify_payment(reference):
                     user_email = verification["data"]["customer"]["email"]
                     amount = verification["data"]["amount"] / 100  # Convert back to Naira
                     wallet_updated = update_user_wallet(user_email, amount)
-        
+                    
         except Exception as e:
             print(f"Error updating transaction: {str(e)}")
-    
+
     return jsonify({
         "status": "success",
         "data": {
@@ -348,12 +310,13 @@ def payment_redirect():
     reference = request.args.get("reference")
     if not reference:
         return "Reference is required", 400
-    
+
     # Verify the transaction
     verification = verify_paystack_transaction(reference)
+    
     if "error" in verification:
         return f"<h1>Payment Verification Error</h1><p>{verification['error']}</p>", 500
-    
+        
     if not verification or not verification.get("status"):
         return f"""
         <h1>Payment Verification Failed</h1>
@@ -384,23 +347,23 @@ def payment_redirect():
                     user_email = verification["data"]["customer"]["email"]
                     amount = verification["data"]["amount"] / 100  # Convert back to Naira
                     wallet_updated = update_user_wallet(user_email, amount)
-        
+                    
         except Exception as e:
             print(f"Error updating transaction: {str(e)}")
-    
+
     if verification["data"]["status"] == "success":
         return f"""
         <h1>Payment Successful!</h1>
         <p>Reference: {reference}</p>
-        <p>Amount: ₦{verification["data"]["amount"] / 100:,.2f}</p>
+        <p>Amount: ₦{verification['data']['amount'] / 100:,.2f}</p>
         <p>Your wallet has been credited successfully.</p>
         <a href="/">Return Home</a>
         """
     else:
         return f"""
-        <h1>Payment Status: {verification["data"]["status"]}</h1>
+        <h1>Payment Status: {verification['data']['status']}</h1>
         <p>Reference: {reference}</p>
-        <p>Amount: ₦{verification["data"]["amount"] / 100:,.2f}</p>
+        <p>Amount: ₦{verification['data']['amount'] / 100:,.2f}</p>
         <a href="/">Return Home</a>
         """
 
@@ -411,12 +374,11 @@ def paystack_webhook():
     signature = request.headers.get("x-paystack-signature")
     if not signature:
         return "No signature provided", 400
-    
+
     body = request.get_data()
-    
     if not verify_paystack_signature(signature, body):
         return "Invalid signature", 400
-    
+
     data = request.get_json()
     print("✅ Webhook received:", data.get("event"), data.get("data", {}).get("reference"))
     
@@ -445,12 +407,13 @@ def paystack_webhook():
                         user_email = data["data"]["customer"]["email"]
                         amount = data["data"]["amount"] / 100
                         update_user_wallet(user_email, amount)
-                    
+                        
                     print(f"Transaction {reference} updated successfully via webhook")
+                    
             except Exception as e:
                 print(f"Error updating transaction via webhook: {str(e)}")
                 return jsonify({"status": "error", "message": str(e)}), 500
-    
+                
     return jsonify({"status": "success"}), 200
 
 @app.route("/api/health")
