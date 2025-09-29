@@ -61,8 +61,8 @@ def verify_paystack_signature(signature, body):
     if not PAYSTACK_SECRET_KEY:
         return False
     computed_signature = hmac.new(
-        PAYSTACK_SECRET_KEY.encode("utf-8"), 
-        body, 
+        PAYSTACK_SECRET_KEY.encode("utf-8"),
+        body,
         hashlib.sha512
     ).hexdigest()
     return hmac.compare_digest(signature, computed_signature)
@@ -132,6 +132,35 @@ def initialize_paystack_transaction(email, amount, metadata=None, channel=None):
         print(f"Paystack initialization error: {str(e)}")
         return {"error": str(e)}
 
+def create_dedicated_virtual_account(email, amount):
+    """Create dedicated virtual account for bank transfer"""
+    if not PAYSTACK_SECRET_KEY:
+        return {"error": "Paystack not configured"}
+
+    headers = {
+        "Authorization": f"Bearer {PAYSTACK_SECRET_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "email": email,
+        "amount": int(amount * 100),
+        "currency": "NGN"
+    }
+    
+    try:
+        response = requests.post(
+            f"{PAYSTACK_BASE_URL}/dedicated_account",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"Paystack virtual account error: {str(e)}")
+        return {"error": str(e)}
+
 def verify_paystack_transaction(reference):
     """Verify a Paystack transaction"""
     if not PAYSTACK_SECRET_KEY:
@@ -163,6 +192,7 @@ def index():
         "endpoints": {
             "payment_methods": "/api/payment/methods",
             "initialize_payment": "/api/payment/initialize",
+            "create_virtual_account": "/api/payment/virtual-account",
             "verify_payment": "/api/payment/verify/<reference>",
             "webhook": "/api/webhook/paystack"
         }
@@ -239,6 +269,59 @@ def api_initialize_payment():
                 "authorization_url": response["data"]["authorization_url"],
                 "access_code": response["data"]["access_code"],
                 "reference": response["data"]["reference"],
+                "transaction_id": transaction_id
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({"error": f"An error occurred: {str(e)}"}), 500
+
+@app.route("/api/payment/virtual-account", methods=["POST"])
+def api_create_virtual_account():
+    """API endpoint to create dedicated virtual account"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+
+        email = data.get("email")
+        amount = data.get("amount")
+        
+        if not email or not amount:
+            return jsonify({"error": "Email and amount are required"}), 400
+            
+        try:
+            amount = float(amount)
+        except ValueError:
+            return jsonify({"error": "Amount must be a number"}), 400
+
+        # Create dedicated virtual account
+        response = create_dedicated_virtual_account(email, amount)
+        
+        if "error" in response:
+            return jsonify({"error": response["error"]}), 500
+            
+        if not response or not response.get("status"):
+            return jsonify({"error": "Virtual account creation failed"}), 400
+
+        # Log transaction to Firebase
+        transaction_data = {
+            "email": email,
+            "amount": amount,
+            "service_type": "wallet_funding",
+            "payment_method": "Bank Transfer",
+            "status": "pending",
+            "reference": response["data"].get("reference", ""),
+            "account_details": response["data"],
+            "created_at": datetime.now().isoformat()
+        }
+        
+        transaction_id = log_transaction_to_firebase(transaction_data)
+        
+        return jsonify({
+            "status": "success",
+            "data": {
+                "account_details": response["data"],
                 "transaction_id": transaction_id
             }
         })
