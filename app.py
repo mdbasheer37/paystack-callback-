@@ -33,16 +33,16 @@ try:
         cred = credentials.Certificate(cred_dict)
         firebase_admin.initialize_app(cred, {'databaseURL': FIREBASE_DB_URL})
         firebase_initialized = True
-        print("Firebase initialized successfully")
+        print("✅ Firebase initialized successfully")
     else:
-        print("Firebase credentials not found")
+        print("❌ Firebase credentials not found")
 except Exception as e:
-    print(f"Firebase initialization failed: {str(e)}")
+    print(f"❌ Firebase initialization failed: {str(e)}")
 
 # Payment methods
 PAYMENT_METHODS = {
     "card": {"name": "Card", "icon": "credit-card", "color": "#3498db"},
-    "bank_transfer": {"name": "Bank Transfer", "icon": "bank", "color": "#2ecc71"},
+    "transfer": {"name": "Bank Transfer", "icon": "bank", "color": "#2ecc71"},
     "ussd": {"name": "USSD", "icon": "phone", "color": "#e74c3c"}
 }
 
@@ -76,7 +76,7 @@ def log_transaction_to_firebase(transaction_data):
         new_transaction_ref.set(transaction_data)
         return new_transaction_ref.key
     except Exception as e:
-        print(f"Error logging to Firebase: {str(e)}")
+        print(f"❌ Error logging to Firebase: {str(e)}")
         return None
 
 @require_firebase
@@ -96,7 +96,7 @@ def update_user_wallet(user_email, amount):
             return True
         return False
     except Exception as e:
-        print(f"Error updating user wallet: {str(e)}")
+        print(f"❌ Error updating user wallet: {str(e)}")
         return False
 
 def initialize_paystack_transaction(email, amount, metadata=None, channel=None):
@@ -129,7 +129,7 @@ def initialize_paystack_transaction(email, amount, metadata=None, channel=None):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Paystack initialization error: {str(e)}")
+        print(f"❌ Paystack initialization error: {str(e)}")
         return {"error": str(e)}
 
 def create_dedicated_virtual_account(email, amount):
@@ -143,9 +143,8 @@ def create_dedicated_virtual_account(email, amount):
     }
     
     payload = {
-        "email": email,
-        "amount": int(amount * 100),
-        "currency": "NGN"
+        "customer": email,
+        "preferred_bank": "wema-bank",
     }
     
     try:
@@ -158,7 +157,7 @@ def create_dedicated_virtual_account(email, amount):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Paystack virtual account error: {str(e)}")
+        print(f"❌ Paystack virtual account error: {str(e)}")
         return {"error": str(e)}
 
 def verify_paystack_transaction(reference):
@@ -180,22 +179,16 @@ def verify_paystack_transaction(reference):
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        print(f"Paystack verification error: {str(e)}")
+        print(f"❌ Paystack verification error: {str(e)}")
         return {"error": str(e)}
 
 # ======= ROUTES =======
 @app.route("/")
 def index():
     return jsonify({
-        "message": "VTU Payment Service API",
+        "message": "Cheap4u VTU Payment Service API",
         "version": "1.0",
-        "endpoints": {
-            "payment_methods": "/api/payment/methods",
-            "initialize_payment": "/api/payment/initialize",
-            "create_virtual_account": "/api/payment/virtual-account",
-            "verify_payment": "/api/payment/verify/<reference>",
-            "webhook": "/api/webhook/paystack"
-        }
+        "status": "active"
     })
 
 @app.route("/api/payment/methods")
@@ -373,7 +366,7 @@ def api_verify_payment(reference):
                     wallet_updated = update_user_wallet(user_email, amount)
                     
         except Exception as e:
-            print(f"Error updating transaction: {str(e)}")
+            print(f"❌ Error updating transaction: {str(e)}")
 
     return jsonify({
         "status": "success",
@@ -386,69 +379,6 @@ def api_verify_payment(reference):
             "verification_data": verification["data"]
         }
     })
-
-@app.route("/payment/redirect")
-def payment_redirect():
-    """Redirect endpoint for web payments"""
-    reference = request.args.get("reference")
-    if not reference:
-        return "Reference is required", 400
-
-    # Verify the transaction
-    verification = verify_paystack_transaction(reference)
-    
-    if "error" in verification:
-        return f"<h1>Payment Verification Error</h1><p>{verification['error']}</p>", 500
-        
-    if not verification or not verification.get("status"):
-        return f"""
-        <h1>Payment Verification Failed</h1>
-        <p>We couldn't verify your payment. Please contact support with reference: {reference}</p>
-        <a href="/">Return Home</a>
-        """
-    
-    # Update Firebase with payment status
-    transaction_updated = False
-    wallet_updated = False
-    
-    if firebase_initialized:
-        try:
-            ref = db.reference('transactions')
-            transactions = ref.order_by_child('reference').equal_to(reference).get()
-            
-            if transactions:
-                transaction_key = list(transactions.keys())[0]
-                ref.child(transaction_key).update({
-                    "status": verification["data"]["status"],
-                    "verified_at": datetime.now().isoformat(),
-                    "payment_details": verification["data"]
-                })
-                transaction_updated = True
-                
-                # Update user wallet balance in Firebase
-                if verification["data"]["status"] == "success":
-                    user_email = verification["data"]["customer"]["email"]
-                    amount = verification["data"]["amount"] / 100  # Convert back to Naira
-                    wallet_updated = update_user_wallet(user_email, amount)
-                    
-        except Exception as e:
-            print(f"Error updating transaction: {str(e)}")
-
-    if verification["data"]["status"] == "success":
-        return f"""
-        <h1>Payment Successful!</h1>
-        <p>Reference: {reference}</p>
-        <p>Amount: ₦{verification['data']['amount'] / 100:,.2f}</p>
-        <p>Your wallet has been credited successfully.</p>
-        <a href="/">Return Home</a>
-        """
-    else:
-        return f"""
-        <h1>Payment Status: {verification['data']['status']}</h1>
-        <p>Reference: {reference}</p>
-        <p>Amount: ₦{verification['data']['amount'] / 100:,.2f}</p>
-        <a href="/">Return Home</a>
-        """
 
 @app.route("/api/webhook/paystack", methods=["POST"])
 def paystack_webhook():
@@ -491,10 +421,10 @@ def paystack_webhook():
                         amount = data["data"]["amount"] / 100
                         update_user_wallet(user_email, amount)
                         
-                    print(f"Transaction {reference} updated successfully via webhook")
+                    print(f"✅ Transaction {reference} updated successfully via webhook")
                     
             except Exception as e:
-                print(f"Error updating transaction via webhook: {str(e)}")
+                print(f"❌ Error updating transaction via webhook: {str(e)}")
                 return jsonify({"status": "error", "message": str(e)}), 500
                 
     return jsonify({"status": "success"}), 200
