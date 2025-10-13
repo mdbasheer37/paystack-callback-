@@ -7,9 +7,10 @@ import firebase_admin
 from firebase_admin import credentials, db
 from flask import Flask, request, jsonify, current_app
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple
 import re
+import uuid
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -36,29 +37,55 @@ class Config:
     # Admin
     ADMIN_API_KEY = os.getenv('ADMIN_API_KEY')
 
-# ==================== FIREBASE CLIENT ====================
+# ==================== ENHANCED FIREBASE CLIENT ====================
 class FirebaseClient:
     _instance = None
     
     def __init__(self):
         try:
             if not firebase_admin._apps:
-                if os.getenv('FIREBASE_CREDENTIALS_JSON'):
-                    cred_json = json.loads(os.getenv('FIREBASE_CREDENTIALS_JSON'))
-                    cred = credentials.Certificate(cred_json)
-                elif os.getenv('FIREBASE_CREDENTIALS_PATH'):
-                    cred = credentials.Certificate(os.getenv('FIREBASE_CREDENTIALS_PATH'))
-                else:
-                    print("⚠️ Firebase credentials not provided")
-                    self.root_ref = None
-                    return
+                # Try multiple ways to get credentials
+                cred = None
                 
-                firebase_admin.initialize_app(cred, {
-                    'databaseURL': os.getenv('FIREBASE_DB_URL')
-                })
-            
-            self.root_ref = db.reference('/')
-            print("✅ Firebase initialized successfully")
+                # Method 1: JSON string from environment
+                if os.getenv('FIREBASE_CREDENTIALS_JSON'):
+                    try:
+                        cred_json = json.loads(os.getenv('FIREBASE_CREDENTIALS_JSON'))
+                        cred = credentials.Certificate(cred_json)
+                        print("✅ Firebase credentials loaded from environment variable")
+                    except json.JSONDecodeError as e:
+                        print(f"❌ Failed to parse FIREBASE_CREDENTIALS_JSON: {e}")
+                
+                # Method 2: File path from environment
+                elif os.getenv('FIREBASE_CREDENTIALS_PATH') and os.path.exists(os.getenv('FIREBASE_CREDENTIALS_PATH')):
+                    try:
+                        cred = credentials.Certificate(os.getenv('FIREBASE_CREDENTIALS_PATH'))
+                        print("✅ Firebase credentials loaded from file path")
+                    except Exception as e:
+                        print(f"❌ Failed to load Firebase credentials from file: {e}")
+                
+                # Method 3: Default credentials (for development)
+                else:
+                    try:
+                        cred = credentials.ApplicationDefault()
+                        print("✅ Using default Firebase credentials")
+                    except Exception as e:
+                        print(f"❌ No Firebase credentials available: {e}")
+                        self.root_ref = None
+                        return
+                
+                if cred:
+                    firebase_admin.initialize_app(cred, {
+                        'databaseURL': os.getenv('FIREBASE_DB_URL', 'https://your-project-default-rtdb.firebaseio.com/')
+                    })
+                    self.root_ref = db.reference('/')
+                    print("✅ Firebase initialized successfully")
+                else:
+                    print("❌ No valid Firebase credentials found")
+                    self.root_ref = None
+            else:
+                self.root_ref = db.reference('/')
+                print("✅ Firebase already initialized")
             
         except Exception as e:
             print(f"❌ Firebase initialization failed: {str(e)}")
@@ -70,11 +97,34 @@ class FirebaseClient:
             cls._instance = cls()
         return cls._instance
     
-    def create_user(self, user_data: Dict[str, Any]) -> str:
+    def create_user(self, user_data: Dict[str, Any]) -> Tuple[bool, str]:
+        """Create a new user and return (success, user_id)"""
         if not self.root_ref:
-            return "mock_user_id"
-        user_ref = self.root_ref.child('users').push(user_data)
-        return user_ref.key
+            # Fallback: generate mock user ID
+            mock_id = f"mock_{int(datetime.now().timestamp())}"
+            print(f"⚠️ Firebase not available, using mock user: {mock_id}")
+            return True, mock_id
+        
+        try:
+            # Check if user already exists
+            existing_user = self.get_user_by_email(user_data.get('email', ''))
+            if existing_user:
+                return False, "User with this email already exists"
+            
+            # Add timestamps
+            user_data['created_at'] = {'.sv': 'timestamp'}
+            user_data['updated_at'] = {'.sv': 'timestamp'}
+            
+            # Create user
+            user_ref = self.root_ref.child('users').push(user_data)
+            user_id = user_ref.key
+            
+            print(f"✅ User created successfully: {user_id}")
+            return True, user_id
+            
+        except Exception as e:
+            print(f"❌ Error creating user: {str(e)}")
+            return False, str(e)
     
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         if not self.root_ref:
@@ -406,6 +456,8 @@ def home():
         'timestamp': datetime.now().isoformat(),
         'endpoints': {
             'health': 'GET /health',
+            'register': 'POST /api/auth/register',
+            'login': 'POST /api/auth/login',
             'payment_initialize': 'POST /api/payment/initialize',
             'virtual_account': 'POST /api/payment/virtual-account',
             'verify_payment': 'GET /api/payment/verify/<reference>',
@@ -424,6 +476,118 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'firebase': 'connected' if firebase_client.root_ref else 'disconnected'
     })
+
+# ==================== AUTH ROUTES ====================
+
+@app.route('/api/auth/register', methods=['POST'])
+def register_user():
+    """Register a new user"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        # Validate required fields
+        required_fields = ['name', 'email', 'phone', 'password']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'status': 'error', 'message': f'{field} is required'}), 400
+        
+        # Validate email
+        if not validate_email(data['email']):
+            return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
+        
+        # Validate phone
+        if not validate_phone(data['phone']):
+            return jsonify({'status': 'error', 'message': 'Invalid phone number'}), 400
+        
+        # Check if user already exists
+        existing_user = firebase_client.get_user_by_email(data['email'])
+        if existing_user:
+            return jsonify({'status': 'error', 'message': 'User with this email already exists'}), 400
+        
+        # Hash password
+        hashed_password = hashlib.sha256(data['password'].encode()).hexdigest()
+        
+        # Create user data
+        user_data = {
+            'name': data['name'],
+            'email': data['email'].lower(),
+            'phone': data['phone'],
+            'password': hashed_password,
+            'wallet_balance': 0.0,
+            'referral_balance': 0.0,
+            'is_verified': False,
+            'is_premium': False,
+            'joined_date': datetime.now().strftime("%Y-%m-%d"),
+            'last_login': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'created_at': {'.sv': 'timestamp'},
+            'updated_at': {'.sv': 'timestamp'}
+        }
+        
+        # Create user in Firebase
+        success, result = firebase_client.create_user(user_data)
+        
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': 'User registered successfully',
+                'data': {
+                    'user_id': result,
+                    'email': data['email'],
+                    'name': data['name']
+                }
+            })
+        else:
+            return jsonify({'status': 'error', 'message': result}), 400
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Registration failed: {str(e)}'}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login_user():
+    """Login user"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        # Validate required fields
+        if not data.get('email') or not data.get('password'):
+            return jsonify({'status': 'error', 'message': 'Email and password are required'}), 400
+        
+        # Validate email
+        if not validate_email(data['email']):
+            return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
+        
+        # Find user by email
+        user = firebase_client.get_user_by_email(data['email'])
+        if not user:
+            return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
+        
+        # Verify password
+        hashed_password = hashlib.sha256(data['password'].encode()).hexdigest()
+        if user.get('password') != hashed_password:
+            return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
+        
+        # Update last login
+        if firebase_client.root_ref:
+            firebase_client.root_ref.child(f'users/{user["id"]}').update({
+                'last_login': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'updated_at': {'.sv': 'timestamp'}
+            })
+        
+        # Return user data (excluding password)
+        user_response = {k: v for k, v in user.items() if k != 'password'}
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Login successful',
+            'data': user_response
+        })
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Login failed: {str(e)}'}), 500
 
 # ==================== PAYMENT ROUTES ====================
 
@@ -758,6 +922,66 @@ def verify_service():
             
     except Exception as e:
         return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
+
+# ==================== USER PROFILE ROUTES ====================
+
+@app.route('/api/user/profile', methods=['GET'])
+def get_user_profile():
+    """Get user profile by email"""
+    try:
+        email = request.args.get('email')
+        if not email:
+            return jsonify({'status': 'error', 'message': 'Email parameter is required'}), 400
+        
+        if not validate_email(email):
+            return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
+        
+        user = firebase_client.get_user_by_email(email)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+        
+        # Remove password from response
+        user_response = {k: v for k, v in user.items() if k != 'password'}
+        
+        return jsonify({
+            'status': 'success',
+            'data': user_response
+        })
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Failed to get user profile: {str(e)}'}), 500
+
+@app.route('/api/user/update-wallet', methods=['POST'])
+def update_user_wallet():
+    """Update user wallet balance"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        if not data.get('user_id') or not data.get('amount'):
+            return jsonify({'status': 'error', 'message': 'user_id and amount are required'}), 400
+        
+        valid, amount = validate_amount(data['amount'])
+        if not valid:
+            return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
+        
+        success = firebase_client.update_user_wallet(data['user_id'], amount)
+        
+        if success:
+            return jsonify({
+                'status': 'success',
+                'message': 'Wallet updated successfully',
+                'data': {
+                    'user_id': data['user_id'],
+                    'amount': amount
+                }
+            })
+        else:
+            return jsonify({'status': 'error', 'message': 'Failed to update wallet'}), 400
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Failed to update wallet: {str(e)}'}), 500
 
 # ==================== ADMIN ROUTES ====================
 
