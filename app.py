@@ -1,4 +1,3 @@
-
 import os
 import json
 import hmac
@@ -16,7 +15,7 @@ import re
 from dotenv import load_dotenv
 load_dotenv()
 
-# Configuration
+# ==================== CONFIGURATION ====================
 class Config:
     SECRET_KEY = os.getenv('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
     DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
@@ -37,27 +36,33 @@ class Config:
     # Admin
     ADMIN_API_KEY = os.getenv('ADMIN_API_KEY')
 
-# Firebase Client
+# ==================== FIREBASE CLIENT ====================
 class FirebaseClient:
     _instance = None
     
     def __init__(self):
-        if not firebase_admin._apps:
-            if os.getenv('FIREBASE_CREDENTIALS_JSON'):
-                cred_json = json.loads(os.getenv('FIREBASE_CREDENTIALS_JSON'))
-                cred = credentials.Certificate(cred_json)
-            else:
-                cred_path = os.getenv('FIREBASE_CREDENTIALS_PATH')
-                if cred_path:
-                    cred = credentials.Certificate(cred_path)
+        try:
+            if not firebase_admin._apps:
+                if os.getenv('FIREBASE_CREDENTIALS_JSON'):
+                    cred_json = json.loads(os.getenv('FIREBASE_CREDENTIALS_JSON'))
+                    cred = credentials.Certificate(cred_json)
+                elif os.getenv('FIREBASE_CREDENTIALS_PATH'):
+                    cred = credentials.Certificate(os.getenv('FIREBASE_CREDENTIALS_PATH'))
                 else:
-                    raise ValueError("Firebase credentials not provided")
+                    print("⚠️ Firebase credentials not provided")
+                    self.root_ref = None
+                    return
+                
+                firebase_admin.initialize_app(cred, {
+                    'databaseURL': os.getenv('FIREBASE_DB_URL')
+                })
             
-            firebase_admin.initialize_app(cred, {
-                'databaseURL': os.getenv('FIREBASE_DB_URL')
-            })
-        
-        self.root_ref = db.reference('/')
+            self.root_ref = db.reference('/')
+            print("✅ Firebase initialized successfully")
+            
+        except Exception as e:
+            print(f"❌ Firebase initialization failed: {str(e)}")
+            self.root_ref = None
     
     @classmethod
     def get_instance(cls):
@@ -66,14 +71,20 @@ class FirebaseClient:
         return cls._instance
     
     def create_user(self, user_data: Dict[str, Any]) -> str:
+        if not self.root_ref:
+            return "mock_user_id"
         user_ref = self.root_ref.child('users').push(user_data)
         return user_ref.key
     
     def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        if not self.root_ref:
+            return None
         user_ref = self.root_ref.child(f'users/{user_id}')
         return user_ref.get()
     
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        if not self.root_ref:
+            return None
         users_ref = self.root_ref.child('users')
         users = users_ref.get()
         
@@ -84,6 +95,8 @@ class FirebaseClient:
         return None
     
     def update_user_wallet(self, user_id: str, amount: float) -> bool:
+        if not self.root_ref:
+            return True
         try:
             user_ref = self.root_ref.child(f'users/{user_id}/wallet_balance')
             current_balance = user_ref.get() or 0
@@ -93,14 +106,20 @@ class FirebaseClient:
             return False
     
     def create_transaction(self, transaction_data: Dict[str, Any]) -> str:
+        if not self.root_ref:
+            return "mock_tx_id"
         transaction_ref = self.root_ref.child('transactions').push(transaction_data)
         return transaction_ref.key
     
     def get_transaction(self, transaction_id: str) -> Optional[Dict[str, Any]]:
+        if not self.root_ref:
+            return None
         transaction_ref = self.root_ref.child(f'transactions/{transaction_id}')
         return transaction_ref.get()
     
     def get_transaction_by_reference(self, reference: str) -> Optional[Dict[str, Any]]:
+        if not self.root_ref:
+            return None
         transactions_ref = self.root_ref.child('transactions')
         transactions = transactions_ref.get()
         
@@ -111,6 +130,8 @@ class FirebaseClient:
         return None
     
     def update_profit_wallet(self, amount: float) -> bool:
+        if not self.root_ref:
+            return True
         try:
             profit_ref = self.root_ref.child('profit_wallet/total_available')
             current_profit = profit_ref.get() or 0
@@ -120,10 +141,14 @@ class FirebaseClient:
             return False
     
     def create_profit_ledger_entry(self, ledger_data: Dict[str, Any]) -> str:
+        if not self.root_ref:
+            return "mock_ledger_id"
         ledger_ref = self.root_ref.child('profit_ledger').push(ledger_data)
         return ledger_ref.key
     
     def get_profit_ledger_entries(self, status: str = None) -> Dict[str, Any]:
+        if not self.root_ref:
+            return {}
         ledger_ref = self.root_ref.child('profit_ledger')
         entries = ledger_ref.get() or {}
         
@@ -132,10 +157,14 @@ class FirebaseClient:
         return entries
     
     def create_recipient(self, recipient_data: Dict[str, Any]) -> str:
+        if not self.root_ref:
+            return "mock_recipient_id"
         recipient_ref = self.root_ref.child('recipients').push(recipient_data)
         return recipient_ref.key
     
     def get_recipient(self, recipient_code: str) -> Optional[Dict[str, Any]]:
+        if not self.root_ref:
+            return None
         recipients_ref = self.root_ref.child('recipients')
         recipients = recipients_ref.get()
         
@@ -145,7 +174,7 @@ class FirebaseClient:
                     return {**rec_data, 'id': rec_id}
         return None
 
-# Paystack Service
+# ==================== PAYSTACK SERVICE ====================
 class PaystackService:
     def __init__(self):
         self.secret_key = os.getenv('PAYSTACK_SECRET_KEY')
@@ -160,7 +189,7 @@ class PaystackService:
         
         payload = {
             'email': email,
-            'amount': amount * 100,  # Convert to kobo
+            'amount': amount * 100,
             'metadata': metadata or {}
         }
         
@@ -225,7 +254,7 @@ class PaystackService:
         
         payload = {
             'source': 'balance',
-            'amount': amount * 100,  # Convert to kobo
+            'amount': amount * 100,
             'recipient': recipient,
             'reason': reason
         }
@@ -246,7 +275,7 @@ class PaystackService:
         
         return hmac.compare_digest(computed_signature, signature)
 
-# VTPass Service
+# ==================== VTPASS SERVICE ====================
 class VTPassService:
     def __init__(self):
         self.api_key = os.getenv('VTPASS_API_KEY')
@@ -277,7 +306,7 @@ class VTPassService:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            return {'status': 'failed', 'message': str(e)}
+            return {'code': '099', 'response_description': str(e)}
     
     def verify_smartcard(self, service_id: str, billers_code: str) -> Dict[str, Any]:
         url = f"{self.base_url}/merchant-verify"
@@ -292,7 +321,7 @@ class VTPassService:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            return {'status': 'failed', 'message': str(e)}
+            return {'code': '099', 'response_description': str(e)}
     
     def get_service_variations(self, service_id: str) -> Dict[str, Any]:
         url = f"{self.base_url}/service-variations"
@@ -304,9 +333,9 @@ class VTPassService:
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            return {'status': 'failed', 'message': str(e)}
+            return {'code': '099', 'response_description': str(e)}
 
-# Validation Utilities
+# ==================== VALIDATION UTILITIES ====================
 def validate_email(email: str) -> bool:
     pattern = r'^[\w\.-]+@[\w\.-]+\.\w+$'
     return bool(re.match(pattern, email))
@@ -355,299 +384,386 @@ def validate_vtpass_request(data: Dict[str, Any]) -> Tuple[bool, str]:
     
     return True, ""
 
-# Flask App
+# ==================== FLASK APP ====================
 app = Flask(__name__)
 app.config.from_object(Config)
 CORS(app)
 
-# Initialize Firebase
+# Initialize services
 firebase_client = FirebaseClient.get_instance()
+paystack_service = PaystackService()
+vtpass_service = VTPassService()
 
-# Payment Routes
+print("🚀 VTU Backend Services Initialized!")
+
+# ==================== ROUTES ====================
+
+@app.route('/')
+def home():
+    return jsonify({
+        'message': 'VTU Backend API is running! 🚀',
+        'status': 'active',
+        'timestamp': datetime.now().isoformat(),
+        'endpoints': {
+            'health': 'GET /health',
+            'payment_initialize': 'POST /api/payment/initialize',
+            'virtual_account': 'POST /api/payment/virtual-account',
+            'verify_payment': 'GET /api/payment/verify/<reference>',
+            'paystack_webhook': 'POST /api/payment/webhook/paystack',
+            'vtpass_pay': 'POST /api/vtpass/pay',
+            'vtpass_verify': 'POST /api/vtpass/verify',
+            'admin_withdraw': 'POST /api/admin/withdraw'
+        }
+    })
+
+@app.route('/health')
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'service': 'VTU Backend API',
+        'timestamp': datetime.now().isoformat(),
+        'firebase': 'connected' if firebase_client.root_ref else 'disconnected'
+    })
+
+# ==================== PAYMENT ROUTES ====================
+
 @app.route('/api/payment/initialize', methods=['POST'])
 def initialize_payment():
-    data = request.get_json()
-    
-    is_valid, error_msg = validate_payment_request(data)
-    if not is_valid:
-        return jsonify({'status': 'error', 'message': error_msg}), 400
-    
-    paystack = PaystackService()
-    channel = data.get('channel', 'card')
-    metadata = data.get('metadata', {})
-    
-    result = paystack.initialize_transaction(
-        email=data['email'],
-        amount=int(data['amount']),
-        channel=channel,
-        metadata=metadata
-    )
-    
-    if result.get('status'):
+    """Initialize Paystack payment"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        is_valid, error_msg = validate_payment_request(data)
+        if not is_valid:
+            return jsonify({'status': 'error', 'message': error_msg}), 400
+        
+        channel = data.get('channel', 'card')
+        metadata = data.get('metadata', {})
+        
+        result = paystack_service.initialize_transaction(
+            email=data['email'],
+            amount=int(data['amount']),
+            channel=channel,
+            metadata=metadata
+        )
+        
+        if result.get('status'):
+            # Store transaction in Firebase
+            tx_data = {
+                'user_email': data['email'],
+                'amount': float(data['amount']),
+                'channel': channel,
+                'payment_reference': result['data']['reference'],
+                'status': 'pending',
+                'type': 'wallet_funding',
+                'created_at': {'.sv': 'timestamp'},
+                'metadata': metadata
+            }
+            
+            tx_id = firebase_client.create_transaction(tx_data)
+            
+            return jsonify({
+                'status': 'success',
+                'data': {
+                    **result['data'],
+                    'transaction_id': tx_id
+                }
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': result.get('message', 'Payment initialization failed')
+            }), 400
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
+
+@app.route('/api/payment/virtual-account', methods=['POST'])
+def create_virtual_account():
+    """Create dedicated virtual account"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        if not data.get('email'):
+            return jsonify({'status': 'error', 'message': 'Email is required'}), 400
+        
+        if not validate_email(data['email']):
+            return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
+        
+        amount = data.get('amount')
+        
+        result = paystack_service.create_dedicated_account(
+            email=data['email'],
+            amount=int(amount) if amount else None
+        )
+        
+        if result.get('status'):
+            account_data = result['data']
+            
+            # Store virtual account details
+            va_data = {
+                'user_email': data['email'],
+                'account_number': account_data.get('account_number'),
+                'account_name': account_data.get('account_name'),
+                'bank': account_data.get('bank', {}).get('name'),
+                'reference': account_data.get('reference'),
+                'expires_at': account_data.get('expires_at'),
+                'created_at': {'.sv': 'timestamp'}
+            }
+            
+            va_id = firebase_client.create_transaction(va_data)
+            
+            return jsonify({
+                'status': 'success',
+                'data': {
+                    **account_data,
+                    'virtual_account_id': va_id
+                }
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': result.get('message', 'Virtual account creation failed')
+            }), 400
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
+
+@app.route('/api/payment/verify/<reference>', methods=['GET'])
+def verify_payment(reference):
+    """Verify payment status"""
+    try:
+        if not reference:
+            return jsonify({'status': 'error', 'message': 'Reference is required'}), 400
+        
+        # Check Firebase first
+        existing_tx = firebase_client.get_transaction_by_reference(reference)
+        
+        if existing_tx and existing_tx.get('status') == 'success':
+            return jsonify({
+                'status': 'success',
+                'data': existing_tx,
+                'from_cache': True
+            })
+        
+        # Verify with Paystack
+        result = paystack_service.verify_transaction(reference)
+        
+        if result.get('status') and result['data']['status'] == 'success':
+            # Update transaction in Firebase
+            tx_update = {
+                'status': 'success',
+                'verified_at': {'.sv': 'timestamp'},
+                'paystack_response': result['data']
+            }
+            
+            # Credit user wallet if this is a funding transaction
+            if existing_tx and existing_tx.get('type') == 'wallet_funding':
+                user_email = existing_tx.get('user_email')
+                amount = result['data']['amount'] / 100
+                
+                user = firebase_client.get_user_by_email(user_email)
+                if user:
+                    firebase_client.update_user_wallet(user['id'], amount)
+            
+            return jsonify({
+                'status': 'success',
+                'data': result['data']
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': result.get('message', 'Payment verification failed')
+            }), 400
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
+
+@app.route('/api/payment/webhook/paystack', methods=['POST'])
+def paystack_webhook():
+    """Handle Paystack webhooks"""
+    try:
+        payload = request.get_data()
+        signature = request.headers.get('x-paystack-signature')
+        
+        if not paystack_service.verify_webhook_signature(payload, signature):
+            return jsonify({'status': 'error', 'message': 'Invalid signature'}), 400
+        
+        webhook_data = request.get_json()
+        event = webhook_data.get('event')
+        
+        if event == 'charge.success':
+            data = webhook_data.get('data', {})
+            reference = data.get('reference')
+            amount = data.get('amount', 0) / 100
+            
+            # Update transaction in Firebase
+            existing_tx = firebase_client.get_transaction_by_reference(reference)
+            
+            if existing_tx:
+                tx_update = {
+                    'status': 'success',
+                    'webhook_processed_at': {'.sv': 'timestamp'},
+                    'paystack_webhook_data': webhook_data
+                }
+                
+                # Credit user wallet for funding transactions
+                if existing_tx.get('type') == 'wallet_funding':
+                    user_email = existing_tx.get('user_email')
+                    user = firebase_client.get_user_by_email(user_email)
+                    if user:
+                        firebase_client.update_user_wallet(user['id'], amount)
+                        print(f"💰 Credited {amount} to user {user_email}")
+        
+        return jsonify({'status': 'success'})
+        
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Webhook error: {str(e)}'}), 500
+
+# ==================== VTPASS ROUTES ====================
+
+@app.route('/api/vtpass/pay', methods=['POST'])
+def vtpass_pay():
+    """Process VTPass payment with profit tracking"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        is_valid, error_msg = validate_vtpass_request(data)
+        if not is_valid:
+            return jsonify({'status': 'error', 'message': error_msg}), 400
+        
+        selling_price = float(data['amount'])
+        vendor_price = data.get('vendor_price')
+        profit_amount = data.get('profit')
+        
+        # Calculate profit
+        if profit_amount is None:
+            if vendor_price is not None:
+                profit_amount = selling_price - float(vendor_price)
+            else:
+                profit_amount = selling_price * 0.1  # Default 10% profit
+        
+        if profit_amount < 0:
+            return jsonify({'status': 'error', 'message': 'Invalid profit calculation'}), 400
+        
+        # Check user wallet if user_email provided
+        user_email = data.get('user_email')
+        
+        if user_email:
+            user = firebase_client.get_user_by_email(user_email)
+            if not user:
+                return jsonify({'status': 'error', 'message': 'User not found'}), 404
+            
+            if user.get('wallet_balance', 0) < selling_price:
+                return jsonify({'status': 'error', 'message': 'Insufficient wallet balance'}), 400
+            
+            # Deduct from wallet
+            firebase_client.update_user_wallet(user['id'], -selling_price)
+        
+        # Make VTPass payment
+        result = vtpass_service.pay(
+            service_id=data['serviceID'],
+            billers_code=data['billersCode'],
+            variation_code=data['variation_code'],
+            amount=selling_price,
+            phone=data.get('phone'),
+            request_id=data.get('request_id')
+        )
+        
+        # Record transaction
         tx_data = {
-            'user_email': data['email'],
-            'amount': float(data['amount']),
-            'channel': channel,
-            'payment_reference': result['data']['reference'],
-            'status': 'pending',
-            'created_at': {'.sv': 'timestamp'},
-            'metadata': metadata
+            'user_email': user_email,
+            'type': 'vtpass_purchase',
+            'service_id': data['serviceID'],
+            'billers_code': data['billersCode'],
+            'variation_code': data['variation_code'],
+            'amount': selling_price,
+            'vendor_amount': vendor_price,
+            'profit': profit_amount,
+            'status': 'success' if result.get('code') == '000' else 'failed',
+            'vtpass_response': result,
+            'created_at': {'.sv': 'timestamp'}
         }
         
         tx_id = firebase_client.create_transaction(tx_data)
         
-        return jsonify({
-            'status': 'success',
-            'data': {
-                **result['data'],
-                'transaction_id': tx_id
-            }
-        })
-    else:
-        return jsonify({
-            'status': 'error',
-            'message': result.get('message', 'Payment initialization failed')
-        }), 400
-
-@app.route('/api/payment/virtual-account', methods=['POST'])
-def create_virtual_account():
-    data = request.get_json()
-    
-    if not data.get('email'):
-        return jsonify({'status': 'error', 'message': 'Email is required'}), 400
-    
-    if not validate_email(data['email']):
-        return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
-    
-    paystack = PaystackService()
-    amount = data.get('amount')
-    
-    result = paystack.create_dedicated_account(
-        email=data['email'],
-        amount=int(amount) if amount else None
-    )
-    
-    if result.get('status'):
-        account_data = result['data']
-        
-        va_data = {
-            'user_email': data['email'],
-            'account_number': account_data.get('account_number'),
-            'account_name': account_data.get('account_name'),
-            'bank': account_data.get('bank', {}).get('name'),
-            'reference': account_data.get('reference'),
-            'expires_at': account_data.get('expires_at'),
-            'created_at': {'.sv': 'timestamp'}
-        }
-        
-        va_id = firebase_client.create_transaction(va_data)
-        
-        return jsonify({
-            'status': 'success',
-            'data': {
-                **account_data,
-                'virtual_account_id': va_id
-            }
-        })
-    else:
-        return jsonify({
-            'status': 'error',
-            'message': result.get('message', 'Virtual account creation failed')
-        }), 400
-
-@app.route('/api/payment/verify/<reference>', methods=['GET'])
-def verify_payment(reference):
-    if not reference:
-        return jsonify({'status': 'error', 'message': 'Reference is required'}), 400
-    
-    existing_tx = firebase_client.get_transaction_by_reference(reference)
-    
-    if existing_tx and existing_tx.get('status') == 'success':
-        return jsonify({
-            'status': 'success',
-            'data': existing_tx,
-            'from_cache': True
-        })
-    
-    paystack = PaystackService()
-    result = paystack.verify_transaction(reference)
-    
-    if result.get('status') and result['data']['status'] == 'success':
-        tx_data = {
-            'status': 'success',
-            'verified_at': {'.sv': 'timestamp'},
-            'paystack_response': result['data']
-        }
-        
-        if existing_tx and existing_tx.get('type') == 'wallet_funding':
-            user_email = existing_tx.get('user_email')
-            amount = result['data']['amount'] / 100
+        if result.get('code') == '000':  # VTPass success code
+            # Add to profit wallet
+            firebase_client.update_profit_wallet(profit_amount)
             
-            user = firebase_client.get_user_by_email(user_email)
-            if user:
-                firebase_client.update_user_wallet(user['id'], amount)
-        
-        return jsonify({
-            'status': 'success',
-            'data': result['data']
-        })
-    else:
-        return jsonify({
-            'status': 'error',
-            'message': result.get('message', 'Payment verification failed')
-        }), 400
-
-@app.route('/api/payment/webhook/paystack', methods=['POST'])
-def paystack_webhook():
-    payload = request.get_data()
-    signature = request.headers.get('x-paystack-signature')
-    
-    paystack = PaystackService()
-    if not paystack.verify_webhook_signature(payload, signature):
-        return jsonify({'status': 'error', 'message': 'Invalid signature'}), 400
-    
-    webhook_data = request.get_json()
-    event = webhook_data.get('event')
-    
-    if event == 'charge.success':
-        data = webhook_data.get('data', {})
-        reference = data.get('reference')
-        amount = data.get('amount', 0) / 100
-        
-        existing_tx = firebase_client.get_transaction_by_reference(reference)
-        
-        if existing_tx:
-            tx_update = {
-                'status': 'success',
-                'webhook_processed_at': {'.sv': 'timestamp'},
-                'paystack_webhook_data': webhook_data
-            }
-            
-            if existing_tx.get('type') == 'wallet_funding':
-                user_email = existing_tx.get('user_email')
-                user = firebase_client.get_user_by_email(user_email)
-                if user:
-                    firebase_client.update_user_wallet(user['id'], amount)
-    
-    return jsonify({'status': 'success'})
-
-# VTPass Routes
-@app.route('/api/vtpass/pay', methods=['POST'])
-def vtpass_pay():
-    data = request.get_json()
-    
-    is_valid, error_msg = validate_vtpass_request(data)
-    if not is_valid:
-        return jsonify({'status': 'error', 'message': error_msg}), 400
-    
-    selling_price = float(data['amount'])
-    vendor_price = data.get('vendor_price')
-    profit_amount = data.get('profit')
-    
-    if profit_amount is None:
-        if vendor_price is not None:
-            profit_amount = selling_price - float(vendor_price)
-        else:
-            profit_amount = selling_price * 0.1
-    
-    if profit_amount < 0:
-        return jsonify({'status': 'error', 'message': 'Invalid profit calculation'}), 400
-    
-    user_email = data.get('user_email')
-    
-    if user_email:
-        user = firebase_client.get_user_by_email(user_email)
-        if not user:
-            return jsonify({'status': 'error', 'message': 'User not found'}), 404
-        
-        if user.get('wallet_balance', 0) < selling_price:
-            return jsonify({'status': 'error', 'message': 'Insufficient wallet balance'}), 400
-        
-        firebase_client.update_user_wallet(user['id'], -selling_price)
-    
-    vtpass = VTPassService()
-    result = vtpass.pay(
-        service_id=data['serviceID'],
-        billers_code=data['billersCode'],
-        variation_code=data['variation_code'],
-        amount=selling_price,
-        phone=data.get('phone'),
-        request_id=data.get('request_id')
-    )
-    
-    tx_data = {
-        'user_email': user_email,
-        'type': 'vtpass_purchase',
-        'service_id': data['serviceID'],
-        'billers_code': data['billersCode'],
-        'variation_code': data['variation_code'],
-        'amount': selling_price,
-        'vendor_amount': vendor_price,
-        'profit': profit_amount,
-        'status': 'success' if result.get('code') == '000' else 'failed',
-        'vtpass_response': result,
-        'created_at': {'.sv': 'timestamp'}
-    }
-    
-    tx_id = firebase_client.create_transaction(tx_data)
-    
-    if result.get('code') == '000':
-        firebase_client.update_profit_wallet(profit_amount)
-        
-        ledger_data = {
-            'transaction_id': tx_id,
-            'amount': profit_amount,
-            'status': 'available',
-            'created_at': {'.sv': 'timestamp'}
-        }
-        
-        firebase_client.create_profit_ledger_entry(ledger_data)
-        
-        return jsonify({
-            'status': 'success',
-            'data': {
-                **result,
+            # Record profit ledger entry
+            ledger_data = {
                 'transaction_id': tx_id,
-                'profit_amount': profit_amount
+                'amount': profit_amount,
+                'status': 'available',
+                'created_at': {'.sv': 'timestamp'}
             }
-        })
-    else:
-        if user_email and user:
-            firebase_client.update_user_wallet(user['id'], selling_price)
-        
-        return jsonify({
-            'status': 'error',
-            'message': result.get('response_description', 'VTPass payment failed'),
-            'data': result
-        }), 400
+            
+            firebase_client.create_profit_ledger_entry(ledger_data)
+            
+            return jsonify({
+                'status': 'success',
+                'data': {
+                    **result,
+                    'transaction_id': tx_id,
+                    'profit_amount': profit_amount
+                }
+            })
+        else:
+            # Refund user wallet if payment failed
+            if user_email and user:
+                firebase_client.update_user_wallet(user['id'], selling_price)
+            
+            return jsonify({
+                'status': 'error',
+                'message': result.get('response_description', 'VTPass payment failed'),
+                'data': result
+            }), 400
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
 
 @app.route('/api/vtpass/verify', methods=['POST'])
 def verify_service():
-    data = request.get_json()
-    
-    if not data.get('serviceID') or not data.get('billersCode'):
-        return jsonify({'status': 'error', 'message': 'serviceID and billersCode are required'}), 400
-    
-    vtpass = VTPassService()
-    result = vtpass.verify_smartcard(
-        service_id=data['serviceID'],
-        billers_code=data['billersCode']
-    )
-    
-    if result.get('code') == '000':
-        return jsonify({
-            'status': 'success',
-            'data': result
-        })
-    else:
-        return jsonify({
-            'status': 'error',
-            'message': result.get('response_description', 'Verification failed')
-        }), 400
+    """Verify service (smartcard, meter, etc.)"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        if not data.get('serviceID') or not data.get('billersCode'):
+            return jsonify({'status': 'error', 'message': 'serviceID and billersCode are required'}), 400
+        
+        result = vtpass_service.verify_smartcard(
+            service_id=data['serviceID'],
+            billers_code=data['billersCode']
+        )
+        
+        if result.get('code') == '000':
+            return jsonify({
+                'status': 'success',
+                'data': result
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': result.get('response_description', 'Verification failed')
+            }), 400
+            
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
 
-# Admin Routes
+# ==================== ADMIN ROUTES ====================
+
 def require_admin_auth():
-    admin_key = request.headers.get('X-Admin-API-Key') or request.json.get('admin_api_key')
+    """Check admin authentication"""
+    admin_key = request.headers.get('X-Admin-API-Key') or (request.get_json() or {}).get('admin_api_key')
     
     if not admin_key or admin_key != os.getenv('ADMIN_API_KEY'):
         return jsonify({'status': 'error', 'message': 'Unauthorized'}), 401
@@ -655,136 +771,125 @@ def require_admin_auth():
 
 @app.route('/api/admin/withdraw', methods=['POST'])
 def admin_withdraw():
-    auth_error = require_admin_auth()
-    if auth_error:
-        return auth_error
-    
-    data = request.get_json()
-    
-    if not data.get('recipient_account') and not data.get('recipient_bank_code'):
-        return jsonify({'status': 'error', 'message': 'recipient_account or recipient_bank_code is required'}), 400
-    
-    if not data.get('amount'):
-        return jsonify({'status': 'error', 'message': 'amount is required'}), 400
-    
-    valid, amount = validate_amount(data['amount'])
-    if not valid:
-        return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
-    
-    profit_wallet = firebase_client.root_ref.child('profit_wallet/total_available').get() or 0
-    
-    if amount > profit_wallet:
-        return jsonify({'status': 'error', 'message': 'Insufficient profit balance'}), 400
-    
-    paystack = PaystackService()
-    recipient_code = data.get('recipient_code')
-    
-    if not recipient_code:
-        recipient_result = paystack.create_transfer_recipient(
-            account_number=data['recipient_account'],
-            bank_code=data['recipient_bank_code'],
-            account_name=data.get('recipient_name', 'Profit Withdrawal')
+    """Admin profit withdrawal"""
+    try:
+        auth_error = require_admin_auth()
+        if auth_error:
+            return auth_error
+        
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        if not data.get('recipient_account') and not data.get('recipient_bank_code'):
+            return jsonify({'status': 'error', 'message': 'recipient_account or recipient_bank_code is required'}), 400
+        
+        if not data.get('amount'):
+            return jsonify({'status': 'error', 'message': 'amount is required'}), 400
+        
+        valid, amount = validate_amount(data['amount'])
+        if not valid:
+            return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
+        
+        # Check profit wallet balance
+        profit_wallet = firebase_client.root_ref.child('profit_wallet/total_available').get() or 0 if firebase_client.root_ref else 0
+        
+        if amount > profit_wallet:
+            return jsonify({'status': 'error', 'message': 'Insufficient profit balance'}), 400
+        
+        # Create or get transfer recipient
+        recipient_code = data.get('recipient_code')
+        
+        if not recipient_code:
+            recipient_result = paystack_service.create_transfer_recipient(
+                account_number=data['recipient_account'],
+                bank_code=data['recipient_bank_code'],
+                account_name=data.get('recipient_name', 'Profit Withdrawal')
+            )
+            
+            if not recipient_result.get('status'):
+                return jsonify({
+                    'status': 'error',
+                    'message': recipient_result.get('message', 'Recipient creation failed')
+                }), 400
+            
+            recipient_code = recipient_result['data']['recipient_code']
+            
+            # Store recipient in Firebase
+            recipient_data = {
+                'recipient_code': recipient_code,
+                'bank_code': data['recipient_bank_code'],
+                'account_number': data['recipient_account'],
+                'account_name': recipient_result['data']['name'],
+                'created_at': {'.sv': 'timestamp'}
+            }
+            
+            firebase_client.create_recipient(recipient_data)
+        
+        # Initiate transfer
+        transfer_result = paystack_service.initiate_transfer(
+            recipient=recipient_code,
+            amount=amount,
+            reason=data.get('narration', 'Profit withdrawal')
         )
         
-        if not recipient_result.get('status'):
+        if transfer_result.get('status'):
+            # Update profit wallet
+            firebase_client.update_profit_wallet(-amount)
+            
+            # Update profit ledger entries
+            if firebase_client.root_ref:
+                ledger_entries = firebase_client.get_profit_ledger_entries(status='available')
+                
+                remaining_amount = amount
+                for ledger_id, entry in ledger_entries.items():
+                    if remaining_amount <= 0:
+                        break
+                    
+                    entry_amount = entry.get('amount', 0)
+                    if entry_amount <= remaining_amount:
+                        firebase_client.root_ref.child(f'profit_ledger/{ledger_id}').update({
+                            'status': 'withdrawn',
+                            'withdrawn_at': {'.sv': 'timestamp'},
+                            'withdraw_tx_ref': transfer_result['data']['reference']
+                        })
+                        remaining_amount -= entry_amount
+                    else:
+                        firebase_client.root_ref.child(f'profit_ledger/{ledger_id}').update({
+                            'amount': entry_amount - remaining_amount
+                        })
+                        
+                        withdrawn_data = {
+                            'transaction_id': entry.get('transaction_id'),
+                            'amount': remaining_amount,
+                            'status': 'withdrawn',
+                            'created_at': entry.get('created_at'),
+                            'withdrawn_at': {'.sv': 'timestamp'},
+                            'withdraw_tx_ref': transfer_result['data']['reference']
+                        }
+                        
+                        firebase_client.create_profit_ledger_entry(withdrawn_data)
+                        remaining_amount = 0
+            
+            return jsonify({
+                'status': 'success',
+                'data': {
+                    'transfer_reference': transfer_result['data']['reference'],
+                    'amount': amount,
+                    'recipient': recipient_code
+                }
+            })
+        else:
             return jsonify({
                 'status': 'error',
-                'message': recipient_result.get('message', 'Recipient creation failed')
+                'message': transfer_result.get('message', 'Transfer failed')
             }), 400
-        
-        recipient_code = recipient_result['data']['recipient_code']
-        
-        recipient_data = {
-            'recipient_code': recipient_code,
-            'bank_code': data['recipient_bank_code'],
-            'account_number': data['recipient_account'],
-            'account_name': recipient_result['data']['name'],
-            'created_at': {'.sv': 'timestamp'}
-        }
-        
-        firebase_client.create_recipient(recipient_data)
-    
-    transfer_result = paystack.initiate_transfer(
-        recipient=recipient_code,
-        amount=amount,
-        reason=data.get('narration', 'Profit withdrawal')
-    )
-    
-    if transfer_result.get('status'):
-        firebase_client.update_profit_wallet(-amount)
-        
-        ledger_entries = firebase_client.get_profit_ledger_entries(status='available')
-        
-        remaining_amount = amount
-        for ledger_id, entry in ledger_entries.items():
-            if remaining_amount <= 0:
-                break
             
-            entry_amount = entry.get('amount', 0)
-            if entry_amount <= remaining_amount:
-                firebase_client.root_ref.child(f'profit_ledger/{ledger_id}').update({
-                    'status': 'withdrawn',
-                    'withdrawn_at': {'.sv': 'timestamp'},
-                    'withdraw_tx_ref': transfer_result['data']['reference']
-                })
-                remaining_amount -= entry_amount
-            else:
-                firebase_client.root_ref.child(f'profit_ledger/{ledger_id}').update({
-                    'amount': entry_amount - remaining_amount
-                })
-                
-                withdrawn_data = {
-                    'transaction_id': entry.get('transaction_id'),
-                    'amount': remaining_amount,
-                    'status': 'withdrawn',
-                    'created_at': entry.get('created_at'),
-                    'withdrawn_at': {'.sv': 'timestamp'},
-                    'withdraw_tx_ref': transfer_result['data']['reference']
-                }
-                
-                firebase_client.create_profit_ledger_entry(withdrawn_data)
-                remaining_amount = 0
-        
-        return jsonify({
-            'status': 'success',
-            'data': {
-                'transfer_reference': transfer_result['data']['reference'],
-                'amount': amount,
-                'recipient': recipient_code
-            }
-        })
-    else:
-        return jsonify({
-            'status': 'error',
-            'message': transfer_result.get('message', 'Transfer failed')
-        }), 400
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
 
-# Health Check
-@app.route('/health')
-def health_check():
-    return jsonify({'status': 'healthy', 'service': 'VTU Backend API'})
+# ==================== ERROR HANDLERS ====================
 
-@app.route('/')
-def home():
-    return jsonify({
-        'message': 'VTU Backend API',
-        'endpoints': {
-            'payment': {
-                'initialize': 'POST /api/payment/initialize',
-                'virtual_account': 'POST /api/payment/virtual-account',
-                'verify': 'GET /api/payment/verify/<reference>'
-            },
-            'vtpass': {
-                'pay': 'POST /api/vtpass/pay',
-                'verify': 'POST /api/vtpass/verify'
-            },
-            'admin': {
-                'withdraw': 'POST /api/admin/withdraw'
-            }
-        }
-    })
-
-# Error Handlers
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'status': 'error', 'message': 'Endpoint not found'}), 404
@@ -793,6 +898,13 @@ def not_found(error):
 def internal_error(error):
     return jsonify({'status': 'error', 'message': 'Internal server error'}), 500
 
+@app.errorhandler(405)
+def method_not_allowed(error):
+    return jsonify({'status': 'error', 'message': 'Method not allowed'}), 405
+
+# ==================== MAIN ====================
+
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
+    port = int(os.getenv('PORT', 10000))
+    print(f"🚀 Starting VTU Backend on port {port}")
     app.run(host='0.0.0.0', port=port, debug=app.config['DEBUG'])
