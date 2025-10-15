@@ -480,7 +480,7 @@ def health_check():
 # ==================== AUTH ROUTES ====================
 @app.route('/api/auth/register', methods=['POST', 'OPTIONS'])
 def register_user():
-    """Register a new user with CORS support"""
+    """Register a new user with enhanced error handling"""
     if request.method == 'OPTIONS':
         return jsonify({'status': 'success'}), 200
         
@@ -489,13 +489,16 @@ def register_user():
         if not data:
             return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
         
-        print(f"Registration attempt for: {data.get('email')}")  # Debug log
+        print(f"📝 Registration attempt for: {data.get('email')}")
         
         # Validate required fields
         required_fields = ['name', 'email', 'phone', 'password']
-        for field in required_fields:
-            if not data.get(field):
-                return jsonify({'status': 'error', 'message': f'{field} is required'}), 400
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        if missing_fields:
+            return jsonify({
+                'status': 'error', 
+                'message': f'Missing required fields: {", ".join(missing_fields)}'
+            }), 400
         
         # Validate email
         if not validate_email(data['email']):
@@ -503,7 +506,11 @@ def register_user():
         
         # Validate phone
         if not validate_phone(data['phone']):
-            return jsonify({'status': 'error', 'message': 'Invalid phone number'}), 400
+            return jsonify({'status': 'error', 'message': 'Phone number must be 11 digits'}), 400
+        
+        # Check password length
+        if len(data['password']) < 6:
+            return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'}), 400
         
         # Check if user already exists
         existing_user = firebase_client.get_user_by_email(data['email'])
@@ -515,9 +522,9 @@ def register_user():
         
         # Create user data
         user_data = {
-            'name': data['name'],
-            'email': data['email'].lower(),
-            'phone': data['phone'],
+            'name': data['name'].strip(),
+            'email': data['email'].lower().strip(),
+            'phone': data['phone'].strip(),
             'password': hashed_password,
             'wallet_balance': 0.0,
             'referral_balance': 0.0,
@@ -525,32 +532,43 @@ def register_user():
             'is_premium': False,
             'joined_date': datetime.now().strftime("%Y-%m-%d"),
             'last_login': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'created_at': {'.sv': 'timestamp'},
-            'updated_at': {'.sv': 'timestamp'}
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
         }
         
-        print(f"Creating user with data: {user_data}")  # Debug log
+        print(f"🔄 Creating user: {user_data['email']}")
         
         # Create user in Firebase
         success, result = firebase_client.create_user(user_data)
         
         if success:
-            print(f"User created successfully: {result}")  # Debug log
-            return jsonify({
-                'status': 'success',
-                'message': 'User registered successfully',
-                'data': {
-                    'user_id': result,
-                    'email': data['email'],
-                    'name': data['name']
-                }
-            })
+            print(f"✅ User created successfully: {result}")
+            
+            # Get the created user to return complete data
+            created_user = firebase_client.get_user(result)
+            if created_user:
+                # Remove password from response
+                user_response = {k: v for k, v in created_user.items() if k != 'password'}
+                
+                return jsonify({
+                    'status': 'success',
+                    'message': 'User registered successfully',
+                    'data': user_response
+                }), 201
+            else:
+                return jsonify({
+                    'status': 'success',
+                    'message': 'User registered successfully',
+                    'data': {'user_id': result, 'email': user_data['email']}
+                }), 201
         else:
-            print(f"User creation failed: {result}")  # Debug log
+            print(f"❌ User creation failed: {result}")
             return jsonify({'status': 'error', 'message': result}), 400
             
     except Exception as e:
-        print(f"Registration exception: {str(e)}")  # Debug log
+        print(f"💥 Registration exception: {str(e)}")
+        import traceback
+        print(f"Stack trace: {traceback.format_exc()}")
         return jsonify({'status': 'error', 'message': f'Registration failed: {str(e)}'}), 500
 
 @app.route('/api/auth/login', methods=['POST'])
