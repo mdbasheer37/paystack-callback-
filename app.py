@@ -478,14 +478,18 @@ def health_check():
     })
 
 # ==================== AUTH ROUTES ====================
-
-@app.route('/api/auth/register', methods=['POST'])
+@app.route('/api/auth/register', methods=['POST', 'OPTIONS'])
 def register_user():
-    """Register a new user"""
+    """Register a new user with CORS support"""
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'success'}), 200
+        
     try:
         data = request.get_json()
         if not data:
             return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        print(f"Registration attempt for: {data.get('email')}")  # Debug log
         
         # Validate required fields
         required_fields = ['name', 'email', 'phone', 'password']
@@ -525,10 +529,13 @@ def register_user():
             'updated_at': {'.sv': 'timestamp'}
         }
         
+        print(f"Creating user with data: {user_data}")  # Debug log
+        
         # Create user in Firebase
         success, result = firebase_client.create_user(user_data)
         
         if success:
+            print(f"User created successfully: {result}")  # Debug log
             return jsonify({
                 'status': 'success',
                 'message': 'User registered successfully',
@@ -539,9 +546,11 @@ def register_user():
                 }
             })
         else:
+            print(f"User creation failed: {result}")  # Debug log
             return jsonify({'status': 'error', 'message': result}), 400
             
     except Exception as e:
+        print(f"Registration exception: {str(e)}")  # Debug log
         return jsonify({'status': 'error', 'message': f'Registration failed: {str(e)}'}), 500
 
 @app.route('/api/auth/login', methods=['POST'])
