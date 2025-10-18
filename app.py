@@ -998,7 +998,7 @@ def update_user_wallet():
                 'message': 'Wallet updated successfully',
                 'data': {
                     'user_id': data['user_id'],
-                    'amount': amount
+                  nt
                 }
             })
         else:
@@ -1010,32 +1010,48 @@ def update_user_wallet():
 # ==================== VTPASS ROUTES ====================
 @app.route('/api/vtpass/pay', methods=['POST'])
 def vtpass_pay():
-    """Process VTPass payment"""
+    """Process VTPass payment with enhanced error handling"""
     try:
         data = request.get_json()
         if not data:
             return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
         
-        # Validate required fields
+        print(f"🔧 VTPass Pay Request: {data}")  # Debug logging
+        
+        # Enhanced validation
         required_fields = ['serviceID', 'billersCode', 'variation_code', 'amount']
         missing_fields = [field for field in required_fields if not data.get(field)]
         if missing_fields:
             return jsonify({
-                'status': 'error',
+                'status': 'error', 
                 'message': f'Missing required fields: {", ".join(missing_fields)}'
             }), 400
         
         # Validate amount
-        valid, amount = validate_amount(data['amount'])
-        if not valid:
-            return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
+        try:
+            amount = float(data['amount'])
+            if amount <= 0:
+                return jsonify({'status': 'error', 'message': 'Amount must be positive'}), 400
+        except (ValueError, TypeError):
+            return jsonify({'status': 'error', 'message': 'Invalid amount format'}), 400
         
-        # Check user wallet balance if user_email provided
+        # Check user wallet if user_email provided
         user_email = data.get('user_email')
+        user = None
+        
         if user_email:
             user = firebase_client.get_user_by_email(user_email)
-            if user and user.get('wallet_balance', 0) < amount:
-                return jsonify({'status': 'error', 'message': 'Insufficient wallet balance'}), 400
+            if not user:
+                return jsonify({'status': 'error', 'message': 'User not found'}), 404
+            
+            if user.get('wallet_balance', 0) < amount:
+                return jsonify({
+                    'status': 'error', 
+                    'message': f'Insufficient wallet balance. Need: ₦{amount}, Have: ₦{user.get("wallet_balance", 0)}'
+                }), 400
+            
+            # Deduct from wallet first
+            firebase_client.update_user_wallet(user['id'], -amount)
         
         # Make VTPass payment
         result = vtpass_service.pay(
@@ -1043,8 +1059,11 @@ def vtpass_pay():
             billers_code=data['billersCode'],
             variation_code=data['variation_code'],
             amount=amount,
-            phone=data.get('phone')
+            phone=data.get('phone'),
+            request_id=data.get('request_id')
         )
+        
+        print(f"🔧 VTPass API Response: {result}")  # Debug logging
         
         # Record transaction
         tx_data = {
@@ -1054,21 +1073,31 @@ def vtpass_pay():
             'billers_code': data['billersCode'],
             'variation_code': data['variation_code'],
             'amount': amount,
+            'vendor_amount': data.get('vendor_price'),
+            'profit': data.get('profit', amount * 0.1),  # Default 10% profit
             'status': 'success' if result.get('code') == '000' else 'failed',
             'vtpass_response': result,
-            'created_at': datetime.now().isoformat()
+            'created_at': {'.sv': 'timestamp'}
         }
         
         tx_id = firebase_client.create_transaction(tx_data)
         
+        # Handle VTPass response
         if result.get('code') == '000':  # VTPass success code
-            # Deduct from user wallet if applicable
-            if user_email and user:
-                firebase_client.update_user_wallet(user['id'], -amount)
+            profit_amount = data.get('profit', amount * 0.1)
             
-            # Calculate and record profit (10% default)
-            profit = amount * 0.1
-            firebase_client.update_profit_wallet(profit)
+            # Add to profit wallet
+            firebase_client.update_profit_wallet(profit_amount)
+            
+            # Record profit ledger entry
+            ledger_data = {
+                'transaction_id': tx_id,
+                'amount': profit_amount,
+                'status': 'available',
+                'created_at': {'.sv': 'timestamp'}
+            }
+            
+            firebase_client.create_profit_ledger_entry(ledger_data)
             
             return jsonify({
                 'status': 'success',
@@ -1076,18 +1105,31 @@ def vtpass_pay():
                 'data': {
                     **result,
                     'transaction_id': tx_id,
-                    'profit_amount': profit
+                    'profit_amount': profit_amount
                 }
             })
         else:
+            # Refund user wallet if payment failed
+            if user_email and user:
+                firebase_client.update_user_wallet(user['id'], amount)
+            
+            error_msg = result.get('response_description', 'VTPass payment failed')
             return jsonify({
                 'status': 'error',
-                'message': result.get('response_description', 'VTPass payment failed'),
+                'message': f'VTPass Error: {error_msg}',
                 'data': result
             }), 400
             
     except Exception as e:
-        return jsonify({'status': 'error', 'message': f'VTPass payment failed: {str(e)}'}), 500
+        print(f"💥 VTPass Payment Exception: {str(e)}")
+        import traceback
+        print(f"Stack trace: {traceback.format_exc()}")
+        
+        # Refund on any exception
+        if user_email and user:
+            firebase_client.update_user_wallet(user['id'], amount)
+            
+        return jsonify({'status': 'error', 'message': f'Server error: {str(e)}'}), 500
 
 @app.route('/api/vtpass/verify', methods=['POST'])
 def vtpass_verify():
