@@ -459,53 +459,41 @@ class VTPassService:
             'Content-Type': 'application/json'
         }
     
-    def pay(self, service_id: str, billers_code: str, variation_code: str,
-           amount: int, phone: str = None) -> Dict[str, Any]:
-        """Make VTPass payment"""
-        url = f"{self.base_url}/pay"
-        
-        payload = {
-            'serviceID': service_id,
-            'billersCode': billers_code,
-            'variation_code': variation_code,
-            'amount': amount,
-            'phone': phone,
-            'request_id': f"req_{int(datetime.now().timestamp())}"
-        }
-        
-        # Remove None values
-        payload = {k: v for k, v in payload.items() if v is not None}
-        
-        print(f"🔄 Making VTPass payment: {service_id} - ₦{amount}")
-        
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            
-            print(f"📊 VTPass Response: {result.get('code')}")
-            return result
-            
-        except requests.exceptions.RequestException as e:
-            error_msg = f"VTPass API error: {str(e)}"
-            print(f"❌ {error_msg}")
-            return {'code': '099', 'response_description': error_msg}
     
+    def pay(self, service_id: str, billers_code: str, variation_code: str,
+       amount: int, phone: str = None, request_id: str = None) -> Dict[str, Any]:
+    url = f"{self.base_url}/pay"  # This is correct
+    
+    payload = {
+        'serviceID': service_id,
+        'billersCode': billers_code,
+        'variation_code': variation_code,
+        'amount': amount,
+        'phone': phone or '',
+        'request_id': request_id or f"req_{int(datetime.now().timestamp())}"
+    }
+    
+    try:
+        response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {'code': '099', 'response_description': str(e), 'content': str(e)}
+
     def verify_smartcard(self, service_id: str, billers_code: str) -> Dict[str, Any]:
-        """Verify smartcard number"""
-        url = f"{self.base_url}/merchant-verify"
-        
+        url = f"{self.base_url}/merchant-verify"  # This is correct
+    
         payload = {
-            'serviceID': service_id,
-            'billersCode': billers_code
-        }
-        
+           'serviceID': service_id,
+           'billersCode': billers_code
+    }
+    
         try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            response.raise_for_status()
-            return response.json()
+           response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+           response.raise_for_status()
+           return response.json()
         except requests.exceptions.RequestException as e:
-            return {'code': '099', 'response_description': str(e)}
+           return {'code': '099', 'response_description': str(e)}
 
 # ==================== TERMII SERVICE ====================
 class TermiiService:
