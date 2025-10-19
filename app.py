@@ -449,13 +449,15 @@ class PaystackService:
             return False
 
 # ==================== VTPASS SERVICE ====================
+# In VTPassService class, fix the headers:
 class VTPassService:
     def __init__(self):
         self.api_key = os.getenv('VTPASS_API_KEY')
+        self.secret_key = os.getenv('VTPASS_SECRET_KEY')  # Add this
         self.base_url = os.getenv('VTPASS_BASE_URL', 'https://vtpass.com/api')
         self.headers = {
             'api-key': self.api_key,
-            'secret-key': self.api_key,
+            'secret-key': self.secret_key,  # Use secret key here
             'Content-Type': 'application/json'
         }
     
