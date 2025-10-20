@@ -24,8 +24,8 @@ class Config:
     DEBUG = os.getenv('DEBUG', 'false').lower() == 'true'
     
     # Paystack
-    PAYSTACK_SECRET_KEY = os.getenv('PAYSTACK_SECRET_KEY', 'sk_test_b00de6aadd403feddfe97eb78b0df497461e3633')
-    PAYSTACK_PUBLIC_KEY = os.getenv('PAYSTACK_PUBLIC_KEY', 'pk_test_79b73fb87fd6ba75d670174cb202ba6265e58329')
+    PAYSTACK_SECRET_KEY = os.getenv('PAYSTACK_SECRET_KEY')
+    PAYSTACK_PUBLIC_KEY = os.getenv('PAYSTACK_PUBLIC_KEY', 'pk_live_1c8ef956f754eeb28d0a6f741eb2000a05da0966')
     PAYSTACK_BASE_URL = 'https://api.paystack.co'
     
     # VTPass
