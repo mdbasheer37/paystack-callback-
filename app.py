@@ -85,6 +85,68 @@ class Config:
 class FirebaseClient:
     _instance = None
 
+    
+    def get_user_by_referral_code(self, referral_code: str) -> Optional[Dict[str, Any]]:
+        """Get user by referral code"""
+        try:
+            if self.root_ref:
+                users_ref = self.root_ref.child('users')
+                users = users_ref.get()
+                if users:
+                    for user_id, user_data in users.items():
+                        if user_data.get('referral_code') == referral_code:
+                            user_data['id'] = user_id
+                            return user_data
+                    return None
+            else:
+                # Mock mode
+                for user_id, user_data in self.mock_users.items():
+                    if user_data.get('referral_code') == referral_code:
+                        user_data['id'] = user_id
+                        return user_data
+                return None
+        except Exception as e:
+            print(f"❌ Error getting user by referral code: {e}")
+            return None
+
+    def create_referral_transaction(self, referral_data: Dict[str, Any]) -> str:
+        """Create referral transaction record"""
+        try:
+            referral_data['created_at'] = datetime.now().isoformat()
+            if self.root_ref:
+                referral_ref = self.root_ref.child('referral_transactions').push(referral_data)
+                return referral_ref.key
+            else:
+                # Mock mode
+                ref_id = f"ref_{int(datetime.now().timestamp())}"
+                if not hasattr(self, 'mock_referral_transactions'):
+                    self.mock_referral_transactions = {}
+                self.mock_referral_transactions[ref_id] = referral_data
+                return ref_id
+        except Exception as e:
+            print(f"❌ Error creating referral transaction: {e}")
+            return f"mock_ref_{int(datetime.now().timestamp())}"
+
+    def get_user_referrals(self, user_id: str) -> List[Dict[str, Any]]:
+        """Get all referrals for a user"""
+        try:
+            referrals = []
+            if self.root_ref:
+                referrals_ref = self.root_ref.child('referral_transactions')
+                all_refs = referrals_ref.get() or {}
+                for ref_id, ref_data in all_refs.items():
+                    if ref_data.get('referrer_id') == user_id:
+                        referrals.append({**ref_data, 'id': ref_id})
+            else:
+                # Mock mode
+                if hasattr(self, 'mock_referral_transactions'):
+                    for ref_id, ref_data in self.mock_referral_transactions.items():
+                        if ref_data.get('referrer_id') == user_id:
+                            referrals.append({**ref_data, 'id': ref_id})
+            return referrals
+        except Exception as e:
+            print(f"❌ Error getting user referrals: {e}")
+            return []
     def __init__(self):
         try:
             if not firebase_admin._apps:
