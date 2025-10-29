@@ -858,16 +858,30 @@ def health_check():
     })
 
 # ==================== AUTH ROUTES ====================
+# Add these utility functions
+def generate_referral_code(user_id: str) -> str:
+    """Generate unique referral code"""
+    import random
+    import string
+    # Use first 4 chars of user_id + random string
+    base = user_id[:4].upper() if len(user_id) >= 4 else user_id.upper()
+    random_part = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    return f"REF{base}{random_part}"
 
+def validate_referral_code(code: str) -> bool:
+    """Validate referral code format"""
+    return len(code) >= 8 and code.startswith('REF')
+
+# Update the registration endpoint
 @app.route('/api/auth/register', methods=['POST'])
 def register_user():
-    """Register a new user"""
+    """Register a new user with referral support"""
     try:
         data = request.get_json()
         if not data:
             return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
 
-        print(f"📝 Registration attempt: {data.get('email')}")
+        print(f"📝 Registration attempt with referral: {data.get('email')}")
         
         # Validate required fields
         required_fields = ['name', 'email', 'phone', 'password']
@@ -895,14 +909,39 @@ def register_user():
         if existing_user:
             return jsonify({'status': 'error', 'message': 'User with this email already exists'}), 400
 
-        # Create user data
+        # Validate and process referral code
+        referral_code = data.get('referral_code', '').strip()
+        referred_by = None
+        referrer_data = None
+        
+        if referral_code:
+            if not validate_referral_code(referral_code):
+                return jsonify({'status': 'error', 'message': 'Invalid referral code format'}), 400
+            
+            referrer_data = firebase_client.get_user_by_referral_code(referral_code)
+            if not referrer_data:
+                return jsonify({'status': 'error', 'message': 'Invalid referral code'}), 400
+            
+            # Prevent self-referral
+            if referrer_data.get('email') == data['email']:
+                return jsonify({'status': 'error', 'message': 'Cannot use your own referral code'}), 400
+            
+            referred_by = referrer_data['id']
+            print(f"✅ Valid referral code from: {referrer_data.get('email')}")
+
+        # Create user data with referral fields
         user_data = {
             'name': data['name'].strip(),
             'email': data['email'].lower().strip(),
             'phone': data['phone'].strip(),
             'password': hash_password(data['password']),
             'wallet_balance': 0.0,
-            'referral_balance': 0.0,
+            'referral_balance': 0.0,  # NEW: Separate referral bonus
+            'referral_code': '',  # Will be set after user creation
+            'referred_by': referred_by,  # NEW: Who referred this user
+            'total_referrals': 0,  # NEW: Count of successful referrals
+            'pending_referrals': 0,  # NEW: Referrals waiting for first transaction
+            'has_completed_first_transaction': False,  # NEW: Track first transaction
             'is_verified': False,
             'is_premium': False,
             'joined_date': datetime.now().strftime("%Y-%m-%d"),
@@ -912,10 +951,38 @@ def register_user():
         }
 
         # Create user
-        success, result = firebase_client.create_user(user_data)
+        success, user_id = firebase_client.create_user(user_data)
         if success:
-            # Get created user
-            created_user = firebase_client.get_user(result)
+            # Generate and set referral code
+            referral_code = generate_referral_code(user_id)
+            firebase_client.update_user(user_id, {
+                'referral_code': referral_code
+            })
+
+            # Update referrer's pending referrals count
+            if referred_by and referrer_data:
+                new_pending_count = referrer_data.get('pending_referrals', 0) + 1
+                firebase_client.update_user(referred_by, {
+                    'pending_referrals': new_pending_count
+                })
+                
+                # Create referral record
+                referral_tx_data = {
+                    'referrer_id': referred_by,
+                    'referee_id': user_id,
+                    'referee_email': data['email'],
+                    'referee_phone': data['phone'],
+                    'referral_code': referral_code,
+                    'status': 'pending',  # Will change to 'completed' after first transaction
+                    'bonus_amount': 50.0,
+                    'created_at': datetime.now().isoformat()
+                }
+                firebase_client.create_referral_transaction(referral_tx_data)
+                
+                print(f"✅ Referral recorded: {referrer_data.get('email')} -> {data['email']}")
+
+            # Get created user (with referral code)
+            created_user = firebase_client.get_user(user_id)
             if created_user:
                 # Remove password from response
                 user_response = {k: v for k, v in created_user.items() if k != 'password'}
@@ -928,7 +995,7 @@ def register_user():
                 return jsonify({
                     'status': 'success',
                     'message': 'User registered successfully',
-                    'data': {'user_id': result, 'email': user_data['email']}
+                    'data': {'user_id': user_id, 'email': user_data['email'], 'referral_code': referral_code}
                 }), 201
         else:
             return jsonify({'status': 'error', 'message': result}), 400
@@ -936,6 +1003,7 @@ def register_user():
     except Exception as e:
         print(f"💥 Registration error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Registration failed: {str(e)}'}), 500
+
 
 @app.route('/api/auth/login', methods=['POST'])
 def login_user():
