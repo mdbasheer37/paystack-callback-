@@ -657,7 +657,214 @@ class TermiiService:
             return {'status': 'error', 'message': str(e)}
 
 # ==================== VALIDATION UTILITIES ====================
+@app.route('/api/referral/process-first-transaction', methods=['POST'])
+def process_first_transaction_bonus():
+    """Process referral bonus when user completes first transaction"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
 
+        user_email = data.get('user_email')
+        transaction_amount = data.get('amount', 0)
+        
+        if not user_email:
+            return jsonify({'status': 'error', 'message': 'User email is required'}), 400
+
+        print(f"💰 Processing first transaction bonus for: {user_email}")
+
+        # Get user
+        user = firebase_client.get_user_by_email(user_email)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+        # Check if user already completed first transaction
+        if user.get('has_completed_first_transaction', False):
+            return jsonify({'status': 'success', 'message': 'First transaction already processed'})
+
+        # Update user's first transaction status
+        firebase_client.update_user(user['id'], {
+            'has_completed_first_transaction': True,
+            'updated_at': datetime.now().isoformat()
+        })
+
+        # Process referral bonus if user was referred
+        referrer_id = user.get('referred_by')
+        if referrer_id:
+            referrer = firebase_client.get_user(referrer_id)
+            if referrer:
+                # Add bonus to referrer's referral balance
+                current_bonus = referrer.get('referral_balance', 0.0)
+                new_bonus = current_bonus + 50.0  # ₦50 bonus
+                
+                # Update referrer's stats
+                updates = {
+                    'referral_balance': new_bonus,
+                    'total_referrals': referrer.get('total_referrals', 0) + 1,
+                    'pending_referrals': max(0, referrer.get('pending_referrals', 0) - 1),
+                    'updated_at': datetime.now().isoformat()
+                }
+                
+                firebase_client.update_user(referrer_id, updates)
+                
+                # Update referral transaction status
+                referrals = firebase_client.get_user_referrals(referrer_id)
+                for referral in referrals:
+                    if referral.get('referee_id') == user['id'] and referral.get('status') == 'pending':
+                        # Update the referral transaction
+                        if firebase_client.root_ref:
+                            firebase_client.root_ref.child(f'referral_transactions/{referral["id"]}').update({
+                                'status': 'completed',
+                                'completed_at': datetime.now().isoformat(),
+                                'transaction_amount': transaction_amount
+                            })
+                        else:
+                            # Mock mode
+                            if hasattr(firebase_client, 'mock_referral_transactions'):
+                                firebase_client.mock_referral_transactions[referral['id']].update({
+                                    'status': 'completed',
+                                    'completed_at': datetime.now().isoformat(),
+                                    'transaction_amount': transaction_amount
+                                })
+                        break
+                
+                print(f"✅ Referral bonus processed: ₦50 added to {referrer.get('email')}")
+                
+                return jsonify({
+                    'status': 'success',
+                    'message': 'Referral bonus processed successfully',
+                    'data': {
+                        'referrer_email': referrer.get('email'),
+                        'bonus_amount': 50.0,
+                        'new_referral_balance': new_bonus
+                    }
+                })
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'First transaction recorded (no referral bonus)'
+        })
+
+    except Exception as e:
+        print(f"💥 First transaction bonus error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'Bonus processing failed: {str(e)}'}), 500
+
+@app.route('/api/referral/info', methods=['GET'])
+def get_referral_info():
+    """Get user's referral information"""
+    try:
+        user_email = request.args.get('email')
+        if not user_email:
+            return jsonify({'status': 'error', 'message': 'Email parameter is required'}), 400
+
+        user = firebase_client.get_user_by_email(user_email)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+        # Get referral statistics
+        referrals = firebase_client.get_user_referrals(user['id'])
+        completed_referrals = [r for r in referrals if r.get('status') == 'completed']
+        pending_referrals = [r for r in referrals if r.get('status') == 'pending']
+
+        referral_info = {
+            'referral_code': user.get('referral_code', ''),
+            'referral_link': f"https://cheap4u.technology/register?ref={user.get('referral_code', '')}",
+            'total_referrals': user.get('total_referrals', 0),
+            'pending_referrals': user.get('pending_referrals', 0),
+            'referral_balance': user.get('referral_balance', 0.0),
+            'can_use_bonus': user.get('referral_balance', 0) >= 200.0,
+            'completed_referrals_count': len(completed_referrals),
+            'pending_referrals_count': len(pending_referrals),
+            'total_earned': user.get('referral_balance', 0.0),
+            'next_bonus_threshold': max(0, 200 - user.get('referral_balance', 0))
+        }
+
+        return jsonify({
+            'status': 'success',
+            'data': referral_info
+        })
+
+    except Exception as e:
+        print(f"💥 Referral info error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'Failed to get referral info: {str(e)}'}), 500
+
+@app.route('/api/referral/use-bonus', methods=['POST'])
+def use_referral_bonus():
+    """Use referral bonus for purchase"""
+    try:
+        data = request.get_json()
+        user_email = data.get('user_email')
+        amount = data.get('amount')
+        
+        if not user_email or not amount:
+            return jsonify({'status': 'error', 'message': 'User email and amount are required'}), 400
+
+        # Validate amount
+        valid, amount_float = validate_amount(amount)
+        if not valid or amount_float <= 0:
+            return jsonify({'status': 'error', 'message': 'Invalid amount'}), 400
+
+        user = firebase_client.get_user_by_email(user_email)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+        referral_balance = user.get('referral_balance', 0.0)
+        
+        # Check if bonus can be used (minimum ₦200)
+        if referral_balance < 200.0:
+            return jsonify({
+                'status': 'error', 
+                'message': f'Minimum ₦200 required to use referral bonus. Current: ₦{referral_balance:,.2f}'
+            }), 400
+
+        # Check if requested amount is available
+        if amount_float > referral_balance:
+            return jsonify({
+                'status': 'error',
+                'message': f'Insufficient referral bonus. Available: ₦{referral_balance:,.2f}'
+            }), 400
+
+        # Deduct from referral balance and add to main wallet
+        new_referral_balance = referral_balance - amount_float
+        current_wallet_balance = user.get('wallet_balance', 0.0)
+        new_wallet_balance = current_wallet_balance + amount_float
+
+        updates = {
+            'referral_balance': new_referral_balance,
+            'wallet_balance': new_wallet_balance,
+            'updated_at': datetime.now().isoformat()
+        }
+
+        success = firebase_client.update_user(user['id'], updates)
+        
+        if success:
+            # Record bonus usage transaction
+            bonus_tx_data = {
+                'user_id': user['id'],
+                'type': 'referral_bonus_usage',
+                'amount': amount_float,
+                'previous_referral_balance': referral_balance,
+                'new_referral_balance': new_referral_balance,
+                'new_wallet_balance': new_wallet_balance,
+                'created_at': datetime.now().isoformat()
+            }
+            firebase_client.create_transaction(bonus_tx_data)
+
+            return jsonify({
+                'status': 'success',
+                'message': f'₦{amount_float:,.2f} referral bonus transferred to wallet',
+                'data': {
+                    'amount_used': amount_float,
+                    'new_referral_balance': new_referral_balance,
+                    'new_wallet_balance': new_wallet_balance
+                }
+            })
+        else:
+            return jsonify({'status': 'error', 'message': 'Failed to process bonus usage'}), 400
+
+    except Exception as e:
+        print(f"💥 Bonus usage error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'Bonus usage failed: {str(e)}'}), 500
 def validate_email(email: str) -> bool:
     """Validate email format"""
     if not email:
