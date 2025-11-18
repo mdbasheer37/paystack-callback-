@@ -1152,7 +1152,37 @@ def login_user():
     except Exception as e:
         print(f"💥 Login error: {str(e)}")
         return jsonify({'status': 'error', 'message': f'Login failed: {str(e)}'}), 500
+        
+@app.route('/api/test', methods=['GET'])
+def test_endpoint():
+    return jsonify({
+        'status': 'success',
+        'message': 'Backend is working!',
+        'timestamp': datetime.now().isoformat()
+    })
 
+@app.route('/api/test/db', methods=['GET'])
+def test_database():
+    try:
+        # Test user creation
+        test_user = {
+            'name': 'Test User',
+            'email': 'test@example.com',
+            'phone': '08012345678'
+        }
+        success, user_id = firebase_client.create_user(test_user)
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Database test completed',
+            'user_created': success,
+            'user_id': user_id
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Database test failed: {str(e)}'
+        }), 500
 # ==================== VTPASS ROUTES WITH PROFITABLE PRICING ====================
 
 @app.route('/api/vtpass/airtime', methods=['POST'])
