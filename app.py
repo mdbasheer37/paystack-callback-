@@ -975,7 +975,398 @@ def health_check():
         'timestamp': datetime.now().isoformat(),
         'database': 'connected' if firebase_client.root_ref else 'mock_mode'
     })
+# ==================== ENHANCED AUTHENTICATION SYSTEM ====================
 
+@app.route('/api/auth/register', methods=['POST'])
+def register_user():
+    """Complete user registration with OTP verification"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+
+        print(f"📝 Registration attempt: {data.get('email')}")
+        
+        # Validate required fields
+        required_fields = ['name', 'email', 'phone', 'password']
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        if missing_fields:
+            return jsonify({
+                'status': 'error', 
+                'message': f'Missing required fields: {", ".join(missing_fields)}'
+            }), 400
+
+        # Validate email
+        email = data['email'].lower().strip()
+        if not validate_email(email):
+            return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
+
+        # Validate phone
+        phone = data['phone'].strip()
+        if not validate_phone(phone):
+            return jsonify({'status': 'error', 'message': 'Invalid phone number. Use 11-digit Nigerian format'}), 400
+
+        # Validate password
+        password = data['password']
+        if not validate_password(password):
+            return jsonify({'status': 'error', 'message': 'Password must be at least 6 characters'}), 400
+
+        # Check if user already exists
+        existing_user = firebase_client.get_user_by_email(email)
+        if existing_user:
+            return jsonify({'status': 'error', 'message': 'User with this email already exists'}), 400
+
+        # Check if phone already exists
+        existing_phone_user = firebase_client.get_user_by_phone(phone)
+        if existing_phone_user:
+            return jsonify({'status': 'error', 'message': 'User with this phone number already exists'}), 400
+
+        # Process referral code if provided
+        referral_code = data.get('referral_code', '').strip()
+        referred_by = None
+        referrer_data = None
+        
+        if referral_code:
+            if not validate_referral_code(referral_code):
+                return jsonify({'status': 'error', 'message': 'Invalid referral code format'}), 400
+            
+            referrer_data = firebase_client.get_user_by_referral_code(referral_code)
+            if not referrer_data:
+                return jsonify({'status': 'error', 'message': 'Invalid referral code'}), 400
+            
+            # Prevent self-referral
+            if referrer_data.get('email') == email:
+                return jsonify({'status': 'error', 'message': 'Cannot use your own referral code'}), 400
+            
+            referred_by = referrer_data['id']
+
+        # Generate OTP
+        otp_code = generate_otp()
+        otp_expiry = datetime.now() + timedelta(minutes=10)  # OTP valid for 10 minutes
+
+        # Create user data (not verified yet)
+        user_data = {
+            'name': data['name'].strip(),
+            'email': email,
+            'phone': phone,
+            'password': hash_password(password),
+            'wallet_balance': 0.0,
+            'referral_balance': 0.0,
+            'referral_code': '',  # Will be set after verification
+            'referred_by': referred_by,
+            'total_referrals': 0,
+            'pending_referrals': 0,
+            'is_verified': False,
+            'is_premium': False,
+            'joined_date': datetime.now().strftime("%Y-%m-%d"),
+            'last_login': None,
+            'created_at': datetime.now().isoformat(),
+            'updated_at': datetime.now().isoformat()
+        }
+
+        # Create user in Firebase
+        success, user_id = firebase_client.create_user(user_data)
+        if not success:
+            return jsonify({'status': 'error', 'message': 'Failed to create user account'}), 500
+
+        # Generate referral code
+        referral_code = generate_referral_code(user_id)
+        firebase_client.update_user(user_id, {
+            'referral_code': referral_code
+        })
+
+        # Store OTP for verification
+        otp_data = {
+            'user_id': user_id,
+            'email': email,
+            'phone': phone,
+            'otp_code': otp_code,
+            'expiry': otp_expiry.isoformat(),
+            'verified': False,
+            'created_at': datetime.now().isoformat()
+        }
+        
+        otp_id = firebase_client.create_otp_record(otp_data)
+
+        # Update referrer's pending referrals
+        if referred_by and referrer_data:
+            new_pending_count = referrer_data.get('pending_referrals', 0) + 1
+            firebase_client.update_user(referred_by, {
+                'pending_referrals': new_pending_count
+            })
+            
+            # Create referral record
+            referral_tx_data = {
+                'referrer_id': referred_by,
+                'referee_id': user_id,
+                'referee_email': email,
+                'referee_phone': phone,
+                'referral_code': referral_code,
+                'status': 'pending',
+                'bonus_amount': 50.0,
+                'created_at': datetime.now().isoformat()
+            }
+            firebase_client.create_referral_transaction(referral_tx_data)
+
+        # Send OTP via Termii SMS
+        sms_message = f"Your Cheap4U verification code is: {otp_code}. Valid for 10 minutes."
+        sms_result = termii_service.send_sms(phone, sms_message)
+        
+        if sms_result.get('status') != 'success':
+            print(f"⚠️ SMS sending failed: {sms_result.get('message')}")
+
+        print(f"✅ User registered: {user_id}, OTP sent: {otp_code}")
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Registration successful. Please verify your account with the OTP sent to your phone.',
+            'data': {
+                'user_id': user_id,
+                'email': email,
+                'phone': phone,
+                'otp_id': otp_id,
+                'requires_verification': True
+            }
+        }), 201
+
+    except Exception as e:
+        print(f"💥 Registration error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'Registration failed: {str(e)}'}), 500
+
+@app.route('/api/auth/login', methods=['POST'])
+def login_user():
+    """Complete user login with session management"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+
+        # Validate required fields
+        if not data.get('email') or not data.get('password'):
+            return jsonify({'status': 'error', 'message': 'Email and password are required'}), 400
+
+        # Validate email format
+        email = data['email'].lower().strip()
+        if not validate_email(email):
+            return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
+
+        # Find user
+        user = firebase_client.get_user_by_email(email)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
+
+        # Check if user is verified
+        if not user.get('is_verified', False):
+            return jsonify({
+                'status': 'error', 
+                'message': 'Account not verified. Please verify your email/phone first.',
+                'requires_verification': True,
+                'user_id': user['id']
+            }), 401
+
+        # Verify password
+        hashed_input_password = hash_password(data['password'])
+        if user.get('password') != hashed_input_password:
+            return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
+
+        # Update last login
+        firebase_client.update_user(user['id'], {
+            'last_login': datetime.now().isoformat()
+        })
+
+        # Generate session token (simplified - in production use JWT)
+        session_token = generate_session_token(user['id'])
+        
+        # Store session
+        session_data = {
+            'user_id': user['id'],
+            'email': user['email'],
+            'created_at': datetime.now().isoformat(),
+            'expires_at': (datetime.now() + timedelta(days=7)).isoformat()  # 7 days validity
+        }
+        firebase_client.create_session(session_token, session_data)
+
+        # Remove sensitive data from response
+        user_response = {k: v for k, v in user.items() if k not in ['password', 'otp_code']}
+        
+        print(f"✅ User logged in: {user['email']}")
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Login successful',
+            'data': {
+                'user': user_response,
+                'session_token': session_token,
+                'expires_in': 604800  # 7 days in seconds
+            }
+        })
+
+    except Exception as e:
+        print(f"💥 Login error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'Login failed: {str(e)}'}), 500
+
+@app.route('/api/auth/verify-otp', methods=['POST'])
+def verify_otp():
+    """Verify OTP for account activation"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+
+        user_id = data.get('user_id')
+        otp_code = data.get('otp_code')
+        
+        if not user_id or not otp_code:
+            return jsonify({'status': 'error', 'message': 'User ID and OTP code are required'}), 400
+
+        # Get OTP record
+        otp_record = firebase_client.get_otp_record(user_id)
+        if not otp_record:
+            return jsonify({'status': 'error', 'message': 'OTP not found or expired'}), 400
+
+        # Check if already verified
+        if otp_record.get('verified', False):
+            return jsonify({'status': 'error', 'message': 'OTP already verified'}), 400
+
+        # Check expiry
+        expiry_str = otp_record.get('expiry')
+        if expiry_str:
+            expiry_time = datetime.fromisoformat(expiry_str)
+            if datetime.now() > expiry_time:
+                return jsonify({'status': 'error', 'message': 'OTP has expired'}), 400
+
+        # Verify OTP code
+        if otp_record.get('otp_code') != otp_code:
+            return jsonify({'status': 'error', 'message': 'Invalid OTP code'}), 400
+
+        # Mark OTP as verified
+        firebase_client.update_otp_record(user_id, {'verified': True})
+
+        # Activate user account
+        firebase_client.update_user(user_id, {
+            'is_verified': True,
+            'updated_at': datetime.now().isoformat()
+        })
+
+        # Get updated user data
+        user = firebase_client.get_user(user_id)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+        # Generate session token
+        session_token = generate_session_token(user_id)
+        session_data = {
+            'user_id': user_id,
+            'email': user['email'],
+            'created_at': datetime.now().isoformat(),
+            'expires_at': (datetime.now() + timedelta(days=7)).isoformat()
+        }
+        firebase_client.create_session(session_token, session_data)
+
+        # Remove sensitive data
+        user_response = {k: v for k, v in user.items() if k not in ['password', 'otp_code']}
+
+        print(f"✅ Account verified: {user['email']}")
+
+        return jsonify({
+            'status': 'success',
+            'message': 'Account verified successfully',
+            'data': {
+                'user': user_response,
+                'session_token': session_token,
+                'expires_in': 604800
+            }
+        })
+
+    except Exception as e:
+        print(f"💥 OTP verification error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'OTP verification failed: {str(e)}'}), 500
+
+@app.route('/api/auth/resend-otp', methods=['POST'])
+def resend_otp():
+    """Resend OTP code"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+
+        user_id = data.get('user_id')
+        if not user_id:
+            return jsonify({'status': 'error', 'message': 'User ID is required'}), 400
+
+        # Get user data
+        user = firebase_client.get_user(user_id)
+        if not user:
+            return jsonify({'status': 'error', 'message': 'User not found'}), 404
+
+        # Check if already verified
+        if user.get('is_verified', False):
+            return jsonify({'status': 'error', 'message': 'Account already verified'}), 400
+
+        # Generate new OTP
+        new_otp = generate_otp()
+        new_expiry = datetime.now() + timedelta(minutes=10)
+
+        # Update OTP record
+        otp_data = {
+            'otp_code': new_otp,
+            'expiry': new_expiry.isoformat(),
+            'verified': False,
+            'updated_at': datetime.now().isoformat()
+        }
+        
+        firebase_client.update_otp_record(user_id, otp_data)
+
+        # Send new OTP via SMS
+        sms_message = f"Your Cheap4U verification code is: {new_otp}. Valid for 10 minutes."
+        sms_result = termii_service.send_sms(user['phone'], sms_message)
+        
+        if sms_result.get('status') != 'success':
+            print(f"⚠️ SMS resend failed: {sms_result.get('message')}")
+
+        print(f"✅ OTP resent: {user['email']} - {new_otp}")
+
+        return jsonify({
+            'status': 'success',
+            'message': 'OTP resent successfully',
+            'data': {
+                'user_id': user_id,
+                'email': user['email'],
+                'phone': user['phone']
+            }
+        })
+
+    except Exception as e:
+        print(f"💥 OTP resend error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'OTP resend failed: {str(e)}'}), 500
+
+# ==================== AUTH UTILITY FUNCTIONS ====================
+
+def generate_otp(length=6):
+    """Generate numeric OTP code"""
+    import random
+    return ''.join([str(random.randint(0, 9)) for _ in range(length)])
+
+def generate_session_token(user_id):
+    """Generate session token"""
+    import secrets
+    return f"session_{user_id}_{secrets.token_hex(16)}"
+
+def validate_session(token):
+    """Validate session token"""
+    try:
+        session_data = firebase_client.get_session(token)
+        if not session_data:
+            return None
+        
+        expires_at = datetime.fromisoformat(session_data.get('expires_at'))
+        if datetime.now() > expires_at:
+            firebase_client.delete_session(token)
+            return None
+            
+        return session_data
+    except:
+        return None
 # ==================== AUTH ROUTES ====================
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -1118,41 +1509,7 @@ def login_user():
             return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
 
         # Validate required fields
-        if not data.get('email') or not data.get('password'):
-            return jsonify({'status': 'error', 'message': 'Email and password are required'}), 400
 
-        # Validate email
-        if not validate_email(data['email']):
-            return jsonify({'status': 'error', 'message': 'Invalid email format'}), 400
-
-        # Find user
-        user = firebase_client.get_user_by_email(data['email'])
-        if not user:
-            return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
-
-        # Verify password
-        hashed_password = hash_password(data['password'])
-        if user.get('password') != hashed_password:
-            return jsonify({'status': 'error', 'message': 'Invalid email or password'}), 401
-
-        # Update last login
-        firebase_client.update_user(user['id'], {
-            'last_login': datetime.now().isoformat()
-        })
-
-        # Remove password from response
-        user_response = {k: v for k, v in user.items() if k != 'password'}
-        
-        return jsonify({
-            'status': 'success',
-            'message': 'Login successful',
-            'data': user_response
-        })
-
-    except Exception as e:
-        print(f"💥 Login error: {str(e)}")
-        return jsonify({'status': 'error', 'message': f'Login failed: {str(e)}'}), 500
-        
 @app.route('/api/test', methods=['GET'])
 def test_endpoint():
     return jsonify({
