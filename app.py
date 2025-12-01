@@ -959,7 +959,70 @@ def validate_referral_code(code: str) -> bool:
     return len(code) >= 8 and code.startswith('REF')
 
 # ==================== ENHANCED RESPONSE HANDLER WITH PROFIT ====================
+# Add to your backend (new backend.docx) after line 1048:
 
+@app.route('/api/vtpass/exam-pins', methods=['POST'])
+def purchase_exam_pins():
+    """Purchase exam pins with profitable pricing"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
+        
+        # Extract data
+        exam_type = data.get('exam_type')
+        quantity = int(data.get('quantity', 1))
+        base_price = float(data.get('base_price', 0))
+        selling_price = float(data.get('selling_price', 0))
+        user_email = data.get('user_email')
+        
+        # Get service ID
+        service_id = Config.VTPASS_SERVICE_IDS['exam_pins'].get(exam_type)
+        if not service_id:
+            return jsonify({'status': 'error', 'message': 'Unsupported exam type'}), 400
+        
+        # Process VTPass payment
+        billers_code = f"exam_{int(datetime.now().timestamp())}"
+        result = vtpass_service.pay(
+            service_id=service_id,
+            billers_code=billers_code,
+            variation_code=exam_type.lower(),
+            amount=base_price,
+            phone=''
+        )
+        
+        # Handle response with profit
+        profit_amount = selling_price - base_price
+        return handle_vtpass_response_with_profit(
+            result, data, 'exam_pins', base_price, selling_price, profit_amount
+        )
+        
+    except Exception as e:
+        print(f"💥 Exam pin purchase error: {str(e)}")
+        return jsonify({'status': 'error', 'message': f'Exam pin purchase failed: {str(e)}'}), 500
+
+# Add admin profit endpoints
+@app.route('/api/admin/profit', methods=['GET'])
+def get_profit_data():
+    """Get admin profit data"""
+    try:
+        user_email = request.args.get('user_email')
+        
+        # Check if user is admin
+        if not is_admin(user_email):
+            return jsonify({'status': 'error', 'message': 'Admin access required'}), 403
+        
+        # Get profit data from Firebase
+        profit_data = firebase_client.get_profit_data()
+        
+        return jsonify({
+            'status': 'success',
+            'data': profit_data
+        })
+        
+    except Exception as e:
+        print(f"❌ Error getting profit data: {str(e)}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 def handle_vtpass_response_with_profit(result, request_data, service_type, base_amount, selling_amount, expected_profit):
     """Enhanced response handler with profit tracking"""
     try:
