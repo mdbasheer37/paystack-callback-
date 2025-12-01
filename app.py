@@ -153,6 +153,18 @@ def calculate_profit_amount(selling_price, base_price, service_type):
 class FirebaseClient:
     _instance = None
     
+    def get_profit_data(self):
+        """Get profit wallet data"""
+        try:
+           if self.root_ref:
+              profit_data = self.root_ref.child('profit_wallet').get() or {}
+              return profit_data
+           else:
+               return self.mock_profit_wallet
+         except Exception as e:
+            print(f"Error getting profit data: {e}")
+            return {}
+             
     def __init__(self):
         try:
             if not firebase_admin._apps:
