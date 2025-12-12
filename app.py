@@ -526,100 +526,101 @@ class FirebaseClient:
         except Exception as e:
             print(f"❌ Error creating profit ledger entry: {e}")
             return f"mock_ledger_{int(datetime.now().timestamp())}"
+    # --- START: Add/replace these methods in FirebaseClient class ---
 
     def create_otp_record(self, otp_data: Dict[str, Any]) -> str:
-        """Create OTP record"""
+        """Create OTP record keyed by user_id"""
         try:
+            user_id = otp_data.get('user_id')
+            if not user_id:
+                user_id = f"otp_{int(datetime.now().timestamp())}"
+                otp_data['user_id'] = user_id
+
             if self.root_ref:
-                otp_ref = self.root_ref.child('otp_records').push(otp_data)
-                return otp_ref.key
+                # store under /otps/<user_id>
+                self.root_ref.child(f'otps/{user_id}').set(otp_data)
+                return user_id
             else:
-                # Mock mode
-                otp_id = f"otp_{int(datetime.now().timestamp())}"
-                if not hasattr(self, 'mock_otp_records'):
-                    self.mock_otp_records = {}
-                self.mock_otp_records[otp_id] = otp_data
-                return otp_id
+                self.mock_otps = getattr(self, "mock_otps", {})
+                self.mock_otps[user_id] = otp_data
+                return user_id
         except Exception as e:
-            print(f"❌ Error creating OTP record: {e}")
+            print(f"❌ create_otp_record error: {e}")
             return f"mock_otp_{int(datetime.now().timestamp())}"
 
     def get_otp_record(self, user_id: str) -> Optional[Dict[str, Any]]:
-        """Get OTP record by user ID"""
+        """Retrieve OTP record for a given user_id"""
         try:
-            if self.root_ref:
-                otp_ref = self.root_ref.child('otp_records')
-                otp_records = otp_ref.get()
-                if otp_records:
-                    for otp_id, otp_data in otp_records.items():
-                        if otp_data.get('user_id') == user_id:
-                            return otp_data
-                    return None
-            else:
-                # Mock mode
-                if hasattr(self, 'mock_otp_records'):
-                    for otp_id, otp_data in self.mock_otp_records.items():
-                        if otp_data.get('user_id') == user_id:
-                            return otp_data
+            if not user_id:
                 return None
+            if self.root_ref:
+                rec = self.root_ref.child(f'otps/{user_id}').get()
+                return rec
+            else:
+                return getattr(self, "mock_otps", {}).get(user_id)
         except Exception as e:
-            print(f"❌ Error getting OTP record: {e}")
+            print(f"❌ get_otp_record error: {e}")
             return None
 
     def update_otp_record(self, user_id: str, updates: Dict[str, Any]) -> bool:
-        """Update OTP record"""
+        """Update OTP record fields"""
         try:
+            updates['updated_at'] = datetime.now().isoformat()
             if self.root_ref:
-                otp_ref = self.root_ref.child('otp_records')
-                otp_records = otp_ref.get()
-                if otp_records:
-                    for otp_id, otp_data in otp_records.items():
-                        if otp_data.get('user_id') == user_id:
-                            otp_ref.child(otp_id).update(updates)
-                            return True
-                    return False
+                self.root_ref.child(f'otps/{user_id}').update(updates)
             else:
-                # Mock mode
-                if hasattr(self, 'mock_otp_records'):
-                    for otp_id, otp_data in self.mock_otp_records.items():
-                        if otp_data.get('user_id') == user_id:
-                            self.mock_otp_records[otp_id].update(updates)
-                            return True
-                return False
+                if user_id in getattr(self, "mock_otps", {}):
+                    self.mock_otps[user_id].update(updates)
+                else:
+                    self.mock_otps[user_id] = updates
+            return True
         except Exception as e:
-            print(f"❌ Error updating OTP record: {e}")
+            print(f"❌ update_otp_record error: {e}")
             return False
 
     def create_session(self, token: str, session_data: Dict[str, Any]) -> bool:
-        """Create session record"""
+        """Store session token data"""
         try:
             if self.root_ref:
                 self.root_ref.child(f'sessions/{token}').set(session_data)
-                return True
             else:
-                # Mock mode
-                if not hasattr(self, 'mock_sessions'):
-                    self.mock_sessions = {}
+                self.mock_sessions = getattr(self, "mock_sessions", {})
                 self.mock_sessions[token] = session_data
-                return True
+            return True
         except Exception as e:
-            print(f"❌ Error creating session: {e}")
+            print(f"❌ create_session error: {e}")
             return False
 
     def get_session(self, token: str) -> Optional[Dict[str, Any]]:
-        """Get session data"""
+        """Get session by token"""
         try:
             if self.root_ref:
-                session_data = self.root_ref.child(f'sessions/{token}').get()
-                return session_data
+                return self.root_ref.child(f'sessions/{token}').get()
             else:
-                # Mock mode
-                if hasattr(self, 'mock_sessions'):
-                    return self.mock_sessions.get(token)
-                return None
+                return getattr(self, "mock_sessions", {}).get(token)
         except Exception as e:
-            print(f"❌ Error getting session: {e}")
+            print(f"❌ get_session error: {e}")
             return None
+
+    def create_referral_transaction(self, referral_data: Dict[str, Any]) -> str:
+        """Create referral transaction record"""
+        try:
+            if self.root_ref:
+                ref = self.root_ref.child('referrals').push(referral_data)
+                return ref.key
+            else:
+                self.mock_referral_transactions = getattr(self, "mock_referral_transactions", {})
+                tx_id = f"rftx_{int(datetime.now().timestamp())}"
+                self.mock_referral_transactions[tx_id] = referral_data
+                return tx_id
+        except Exception as e:
+            print(f"❌ create_referral_transaction error: {e}")
+            return f"mock_rftx_{int(datetime.now().timestamp())}"
+
+# --- END: methods for FirebaseClient ---
+    
+
+    
 
     def delete_session(self, token: str) -> bool:
         """Delete session"""
@@ -662,22 +663,7 @@ class FirebaseClient:
             print(f"❌ Error getting user by referral code: {e}")
             return None
 
-    def create_referral_transaction(self, referral_data: Dict[str, Any]) -> str:
-        """Create referral transaction record"""
-        try:
-            referral_data['created_at'] = datetime.now().isoformat()
-            if self.root_ref:
-                referral_ref = self.root_ref.child('referral_transactions').push(referral_data)
-                return referral_ref.key
-            else:
-                # Mock mode
-                ref_id = f"ref_{int(datetime.now().timestamp())}"
-                self.mock_referral_transactions[ref_id] = referral_data
-                return ref_id
-        except Exception as e:
-            print(f"❌ Error creating referral transaction: {e}")
-            return f"mock_ref_{int(datetime.now().timestamp())}"
-
+    
     def get_user_referrals(self, user_id: str) -> List[Dict[str, Any]]:
         """Get all referrals for a user"""
         try:
