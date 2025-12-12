@@ -686,84 +686,88 @@ class FirebaseClient:
             return []
 
 # ==================== PAYSTACK SERVICE ====================
+# --- START: Paystack helpers (add to PaystackService) ---
+
 
 class PaystackService:
     def __init__(self):
         self.secret_key = Config.PAYSTACK_SECRET_KEY
-        self.public_key = Config.PAYSTACK_PUBLIC_KEY
         self.base_url = Config.PAYSTACK_BASE_URL
         self.headers = {
-            'Authorization': f'Bearer {self.secret_key}',
-            'Content-Type': 'application/json'
+            "Authorization": f"Bearer {self.secret_key}",
+            "Content-Type": "application/json"
         }
 
-        print(f"🔧 Paystack Service Initialized: {self.base_url}")
-
-    def initialize_transaction(self, email: str, amount: int, metadata: Dict = None, channel: str = None, callback_url: str = None) -> Dict[str, Any]:
-        """Initialize a Paystack transaction"""
-        url = f"{self.base_url}/transaction/initialize"
-        payload = {
-            'email': email,
-            'amount': amount * 100,  # Convert to kobo
-            'metadata': metadata or {},
-            'currency': 'NGN'
-        }
-        
-        if channel:
-            payload['channels'] = [channel]
-        if callback_url:
-            payload['callback_url'] = callback_url
-
-        print(f"🔄 Initializing Paystack transaction: {email} - ₦{amount}")
-
+    def initialize_transaction(self, email: str, amount_ngn: float, metadata: dict = None):
+        """Initialize Paystack transaction (amount in NGN). Returns authorization URL and reference."""
         try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get('status'):
-                print(f"✅ Transaction initialized: {result['data']['reference']}")
-                return result
-            else:
-                error_msg = result.get('message', 'Unknown Paystack error')
-                print(f"❌ Paystack error: {error_msg}")
-                return {'status': False, 'message': error_msg}
-                
-        except requests.exceptions.RequestException as e:
-            error_msg = f"Paystack API error: {str(e)}"
-            print(f"❌ {error_msg}")
-            return {'status': False, 'message': error_msg}
+            if amount_ngn <= 0:
+                return {'status': False, 'message': 'Invalid amount'}
+            payload = {
+                "email": email,
+                "amount": int(amount_ngn * 100),  # kobo
+                "currency": "NGN",
+                "metadata": metadata or {}
+            }
+            resp = requests.post(f"{self.base_url}/transaction/initialize", json=payload, headers=self.headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            return data
         except Exception as e:
-            error_msg = f"Unexpected error: {str(e)}"
-            print(f"❌ {error_msg}")
-            return {'status': False, 'message': error_msg}
+            print(f"❌ Paystack init error: {e}")
+            return {'status': False, 'message': str(e)}
 
-    def verify_transaction(self, reference: str) -> Dict[str, Any]:
-        """Verify a Paystack transaction"""
-        url = f"{self.base_url}/transaction/verify/{reference}"
-        print(f"🔍 Verifying transaction: {reference}")
-        
+    def verify_transaction(self, reference: str):
+        """Verify Paystack transaction by reference (idempotent)."""
         try:
-            response = requests.get(url, headers=self.headers, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get('status') and result['data']['status'] == 'success':
-                print(f"✅ Transaction verified successfully: {reference}")
-                return result
+            resp = requests.get(f"{self.base_url}/transaction/verify/{reference}", headers=self.headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            # Quick normalization
+            if data.get('status') and data.get('data', {}).get('status') == 'success':
+                pay_data = data['data']
+                # check for duplicate by payment_reference
+                existing = firebase_client.get_transaction_by_reference(reference)
+                if existing:
+                    return {'status': True, 'message': 'Already processed', 'data': existing}
+
+                # Create transaction record
+                tx = {
+                    'payment_reference': reference,
+                    'paystack_status': pay_data.get('status'),
+                    'amount': pay_data.get('amount') / 100.0,
+                    'gateway_response': pay_data.get('gateway_response'),
+                    'channel': pay_data.get('channel'),
+                    'currency': pay_data.get('currency'),
+                    'customer_email': pay_data.get('customer', {}).get('email'),
+                    'metadata': pay_data.get('metadata', {}),
+                    'created_at': datetime.now().isoformat()
+                }
+                tx_id = firebase_client.create_transaction(tx)
+
+                # Credit user wallet (if metadata contains user_id)
+                user_id = pay_data.get('metadata', {}).get('user_id') or tx['metadata'].get('user_id')
+                amt = tx['amount']
+                if user_id:
+                    firebase_client.update_user_wallet(user_id, amt)
+
+                # profit handling
+                profit_rate = PricingConfig.PERCENTAGE_MARKUPS.get('wallet_funding', 0)
+                profit_amount = max(PricingConfig.MINIMUM_PROFITS.get('wallet_funding', 0), amt * profit_rate)
+                firebase_client.update_profit_wallet(profit_amount, transaction_type="profit")
+
+                return {'status': True, 'message': 'Payment verified', 'data': tx}
             else:
-                error_msg = result.get('message', 'Transaction verification failed')
-                print(f"❌ Transaction verification failed: {error_msg}")
-                return {'status': False, 'message': error_msg}
-                
-        except requests.exceptions.RequestException as e:
-            error_msg = f"Paystack verification error: {str(e)}"
-            print(f"❌ {error_msg}")
-            return {'status': False, 'message': error_msg}
+                return {'status': False, 'message': data.get('message', 'Failed to verify')}
         except Exception as e:
-            error_msg = f"Unexpected verification error: {str(e)}"
-            print(f"❌ {error_msg}")
-            return {'status': False, 'message': error_msg}
+            print(f"❌ Paystack verify error: {e}")
+            return {'status': False, 'message': str(e)}
+
+# --- END Paystack helpers ---
+
+    
+    
 
     def verify_webhook_signature(self, payload: bytes, signature: str) -> bool:
         """Verify Paystack webhook signature"""
